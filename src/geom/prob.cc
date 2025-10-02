@@ -1,18 +1,18 @@
 #include <iostream>
-#include<typeinfo>
-#include<climits>
-#include<iomanip>
-#include<typeinfo>
-#include<fstream>
-#include<sstream>
-#include<cstdlib>
-#include<cmath>
-#include<ctime>
+#include <typeinfo>
+#include <climits>
+#include <iomanip>
+#include <typeinfo>
+#include <fstream>
+#include <sstream>
+#include <cstdlib>
+#include <cmath>
+#include <ctime>
 #include "geom/Vector3D.hh"
-#include<numeric>
-#include<random>
-#include<map>
-#include<string>
+#include <numeric>
+#include <random>
+#include <map>
+#include <string>
 #include "geom/Volume.hh"
 #include "geom/Ray.hh"
 #include "geom/LineSegment.hh"

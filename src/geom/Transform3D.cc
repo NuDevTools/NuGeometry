@@ -1,5 +1,12 @@
+#include "geom/NuGeometry.hh"
+
 #include "geom/Transform3D.hh"
+DISABLE_WARNING_PUSH
+#ifdef _MSC_VER
+DISABLE_WARNING(4043)
+#endif
 #include "fmt/format.h"
+DISABLE_WARNING_POP
 #include "geom/Ray.hh"
 
 #include <array>
