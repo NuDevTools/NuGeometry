@@ -134,13 +134,15 @@ int main(){
     mat.AddElement(NuGeom::Element("Hydrogen", 1, 1), 2);
     mat.AddElement(NuGeom::Element("Oxygen", 8, 16), 1);
     mat1.AddElement(NuGeom::Element("Argon", 18, 40), 1);
-
+   
     // Define the interaction geometry
     // Define the inner detector
     auto inner_box = std::make_shared<NuGeom::Box>(NuGeom::Vector3D{1, 1, 1}); // Define a 1x1x1 box
+   
     auto inner_vol = std::make_shared<LogicalVolume>(mat1, inner_box); 
     NuGeom::RotationX3D rot(45*M_PI/180.0);
     auto inner_pvol = std::make_shared<PhysicalVolume>(inner_vol, NuGeom::Transform3D{}, rot);
+
 
     // Define the outer detector
     auto outer_box = std::make_shared<NuGeom::Box>(NuGeom::Vector3D{2, 2, 2});
@@ -152,13 +154,70 @@ int main(){
     inner_pvol->SetMother(outer_pvol);
 
     // Define the "World"
+    // Define the "World"
     auto world_box = std::make_shared<NuGeom::Box>(NuGeom::Vector3D{4, 4, 4});
     auto world = std::make_shared<LogicalVolume>(mat, world_box);
     outer_vol->SetMother(world); 
     world -> AddDaughter(outer_pvol);
 
     // Shoot Rays and get LineSegments
+    // Shoot Rays and get LineSegments
     NuGeom::Ray ray0({0, 0, -2}, {-0.01, 0.01, 1});
+    double prob_max = 0;
+    size_t ntrials = 1024;
+    for(size_t i = 0; i < ntrials; ++i) {
+        NuGeom::Ray ray0({});
+        std::vector<NuGeom::LineSegment> segments0;
+
+    world->GetLineSegments(ray0, segments0);
+
+    // Calculate interaction location
+    std::map<std::string,double> meanfreepaths{
+        {"Water",1e+12},
+        {"Air",1e+13},
+        {"Argon",1e+14}
+    };
+
+    
+
+    std::vector<double> probs0(segments0.size());
+    std::vector<double> probs1(segments0.size());
+    std::vector<double> seglength0(segments0.size());
+    
+    std::vector<std::string> material0(segments0.size());
+    
+
+    // Calculate probability to interact for each line segment
+    for (size_t i=0; i<segments0.size(); ++i){
+        material0[i]=segments0[i].GetMaterial().Name();
+
+
+
+    // NOTE: This only works for l/meanfreepath tiny
+
+
+        probs0[i]=segments0[i].Length()/meanfreepaths[material0[i]];
+
+
+        std::cout << -segments0[i].Length()/meanfreepaths[material0[i]] << std::endl;
+
+
+        probs1[i]=1-exp(-segments0[i].Length()/meanfreepaths[material0[i]]);
+
+
+
+
+
+        // For testing only:
+
+
+        seglength0[i] = segments0[i].Length();
+
+
+    }
+        double normconst0=std::accumulate(probs0.begin(), probs0.end(), 0.0);
+        if (normconst0>prob_max) prob_max=normconst0;
+    }
     std::vector<NuGeom::LineSegment> segments0;
 
     world->GetLineSegments(ray0, segments0);
@@ -170,11 +229,15 @@ int main(){
         {"Argon",1e+14}
     };
 
+    
+
     std::vector<double> probs0(segments0.size());
     std::vector<double> probs1(segments0.size());
     std::vector<double> seglength0(segments0.size());
+    
     std::vector<std::string> material0(segments0.size());
 
+    // Calculate probability to interact for each line segment
     // Calculate probability to interact for each line segment
     for (size_t i=0; i<segments0.size(); ++i){
         material0[i]=segments0[i].GetMaterial().Name();
