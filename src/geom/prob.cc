@@ -169,53 +169,33 @@ int main(){
     for(size_t i = 0; i < ntrials; ++i) {
         NuGeom::Ray ray0({});
         std::vector<NuGeom::LineSegment> segments0;
+        world->GetLineSegments(ray0, segments0);
 
-    world->GetLineSegments(ray0, segments0);
+        // Calculate interaction location
+        std::map<std::string,double> meanfreepaths{
+            {"Water",1e+12},
+            {"Air",1e+13},
+            {"Argon",1e+14}
+        };
 
-    // Calculate interaction location
-    std::map<std::string,double> meanfreepaths{
-        {"Water",1e+12},
-        {"Air",1e+13},
-        {"Argon",1e+14}
-    };
+        std::vector<double> probs0(segments0.size());
+        std::vector<double> probs1(segments0.size());
+        std::vector<double> seglength0(segments0.size());
 
-    
+        std::vector<std::string> material0(segments0.size());
 
-    std::vector<double> probs0(segments0.size());
-    std::vector<double> probs1(segments0.size());
-    std::vector<double> seglength0(segments0.size());
-    
-    std::vector<std::string> material0(segments0.size());
-    
+        // Calculate probability to interact for each line segment
+        for (size_t i=0; i<segments0.size(); ++i){
+            material0[i]=segments0[i].GetMaterial().Name();
 
-    // Calculate probability to interact for each line segment
-    for (size_t i=0; i<segments0.size(); ++i){
-        material0[i]=segments0[i].GetMaterial().Name();
+            // NOTE: This only works for l/meanfreepath tiny
+            probs0[i]=segments0[i].Length()/meanfreepaths[material0[i]];
+            std::cout << -segments0[i].Length()/meanfreepaths[material0[i]] << std::endl;
+            probs1[i]=1-exp(-segments0[i].Length()/meanfreepaths[material0[i]]);
 
-
-
-    // NOTE: This only works for l/meanfreepath tiny
-
-
-        probs0[i]=segments0[i].Length()/meanfreepaths[material0[i]];
-
-
-        std::cout << -segments0[i].Length()/meanfreepaths[material0[i]] << std::endl;
-
-
-        probs1[i]=1-exp(-segments0[i].Length()/meanfreepaths[material0[i]]);
-
-
-
-
-
-        // For testing only:
-
-
-        seglength0[i] = segments0[i].Length();
-
-
-    }
+            // For testing only:
+            seglength0[i] = segments0[i].Length();
+        }
         double normconst0=std::accumulate(probs0.begin(), probs0.end(), 0.0);
         if (normconst0>prob_max) prob_max=normconst0;
     }
