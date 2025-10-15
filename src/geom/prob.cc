@@ -17,6 +17,7 @@
 #include "geom/Ray.hh"
 #include "geom/LineSegment.hh"
 #include "geom/Parser.hh"
+#include "geom/Random.hh"
 
 using NuGeom::LogicalVolume;
 using NuGeom::PhysicalVolume;
@@ -257,6 +258,11 @@ int main(){
     // 4. Determine where it occurs by throwing R2 and finding where \sum_i probs_i > R2 and pick region i
     // 5. Since probs << 1, select by choosing the point given by segement.start + segement.end * (probs[i] - (R2 - sum_{j=0}^{i-1} probs[j]))/ probs[i]
     // 6. Return the interaction point to the user
+    //
+    // Setup Random number generator, seed, and generate random number in [0, 1)
+    auto rand = NuGeom::Random::Instance();
+    rand.Seed(2309182305);
+    double r1 = rand.Uniform(0.0, 1.0);
 
     for (size_t i=0; i<segments0.size(); ++i) probs0[i]=probs0[i]/normconst0;
     std::ofstream hist_exp;
