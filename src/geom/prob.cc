@@ -18,6 +18,7 @@
 #include "geom/LineSegment.hh"
 #include "geom/Parser.hh"
 #include "geom/Random.hh"
+#include "spdlog/spdlog.h"
 
 using NuGeom::LogicalVolume;
 using NuGeom::PhysicalVolume;
@@ -128,6 +129,22 @@ using NuGeom::Vector3D;
 
 // };
 
+NuGeom::Ray ShootRay(const NuGeom::Vector3D &corner1, const NuGeom::Vector3D &corner2) {
+    auto [xmin, xmax] = std::minmax(corner1.X(), corner2.X());
+    auto [ymin, ymax] = std::minmax(corner1.Y(), corner2.Y());
+    auto [zmin, zmax] = std::minmax(corner1.Z(), corner2.Z());
+
+    auto rand = NuGeom::Random::Instance();
+
+    NuGeom::Vector3D position{rand.Uniform(xmin, xmax), rand.Uniform(ymin, ymax), rand.Uniform(zmin, zmax)};
+    double costheta = rand.Uniform(0.0, 1.0);
+    double sintheta = std::sqrt(1-costheta*costheta);
+    double phi = rand.Uniform(0.0, 2*M_PI);
+    NuGeom::Vector3D direction{sintheta*cos(phi), sintheta*sin(phi), costheta};
+
+    return NuGeom::Ray(position, direction);
+}
+
 int main(){
     // Define materials in the detector
     NuGeom::Material mat("Water", 1.0, 2);
@@ -140,14 +157,14 @@ int main(){
     // Define the inner detector
     auto inner_box = std::make_shared<NuGeom::Box>(NuGeom::Vector3D{1, 1, 1}); // Define a 1x1x1 box
    
-    auto inner_vol = std::make_shared<LogicalVolume>(mat1, inner_box); 
+    auto inner_vol = std::make_shared<LogicalVolume>(mat, inner_box); 
     NuGeom::RotationX3D rot(45*M_PI/180.0);
     auto inner_pvol = std::make_shared<PhysicalVolume>(inner_vol, NuGeom::Transform3D{}, rot);
 
 
     // Define the outer detector
     auto outer_box = std::make_shared<NuGeom::Box>(NuGeom::Vector3D{2, 2, 2});
-    auto outer_vol = std::make_shared<LogicalVolume>(mat, outer_box); 
+    auto outer_vol = std::make_shared<LogicalVolume>(mat1, outer_box); 
     outer_vol->AddDaughter(inner_pvol);
     inner_vol->SetMother(outer_vol);
     NuGeom::RotationX3D rot2(30*M_PI/180.0);
@@ -155,28 +172,26 @@ int main(){
     inner_pvol->SetMother(outer_pvol);
 
     // Define the "World"
-    // Define the "World"
     auto world_box = std::make_shared<NuGeom::Box>(NuGeom::Vector3D{4, 4, 4});
     auto world = std::make_shared<LogicalVolume>(mat, world_box);
     outer_vol->SetMother(world); 
     world -> AddDaughter(outer_pvol);
 
-    // Shoot Rays and get LineSegments
-    // Shoot Rays and get LineSegments
-    NuGeom::Ray ray0({0, 0, -2}, {-0.01, 0.01, 1});
-    double prob_max = 0;
-    size_t ntrials = 1024;
-    for(size_t i = 0; i < ntrials; ++i) {
-        NuGeom::Ray ray0({});
-        std::vector<NuGeom::LineSegment> segments0;
-        world->GetLineSegments(ray0, segments0);
+    // Calculate interaction location
+    std::map<std::string,double> meanfreepaths{
+        {"Water",1e+7},
+        {"Air",1e+7},
+        {"Argon",1e+7}
+    };
 
-        // Calculate interaction location
-        std::map<std::string,double> meanfreepaths{
-            {"Water",1e+12},
-            {"Air",1e+13},
-            {"Argon",1e+14}
-        };
+
+    // Shoot Rays and get LineSegments
+    double prob_max = 0;
+    size_t ntrials = 1 << 22;
+    for(size_t i = 0; i < ntrials; ++i) {
+        NuGeom::Ray ray = ShootRay({-2, -2, -2}, {2, 2, -2});
+        std::vector<NuGeom::LineSegment> segments0;
+        world->GetLineSegments(ray, segments0);
 
         std::vector<double> probs0(segments0.size());
         std::vector<double> probs1(segments0.size());
@@ -185,80 +200,113 @@ int main(){
         std::vector<std::string> material0(segments0.size());
 
         // Calculate probability to interact for each line segment
-        for (size_t i=0; i<segments0.size(); ++i){
-            material0[i]=segments0[i].GetMaterial().Name();
+        for (size_t j=0; j<segments0.size(); ++j){
+            material0[j]=segments0[j].GetMaterial().Name();
 
             // NOTE: This only works for l/meanfreepath tiny
-            probs0[i]=segments0[i].Length()/meanfreepaths[material0[i]];
-            std::cout << -segments0[i].Length()/meanfreepaths[material0[i]] << std::endl;
-            probs1[i]=1-exp(-segments0[i].Length()/meanfreepaths[material0[i]]);
+            probs0[j]=segments0[j].Length()/meanfreepaths[material0[j]];
+            // std::cout << -segments0[j].Length()/meanfreepaths[material0[j]] << std::endl;
+            probs1[j]=1-exp(-segments0[j].Length()/meanfreepaths[material0[j]]);
 
             // For testing only:
-            seglength0[i] = segments0[i].Length();
+            seglength0[j] = segments0[j].Length();
         }
         double normconst0=std::accumulate(probs0.begin(), probs0.end(), 0.0);
-        if (normconst0>prob_max) prob_max=normconst0;
+        if (normconst0>prob_max) {
+            std::cout << "Trial: " << i << " Ray: O(" << ray.Origin() << ") D(" << ray.Direction() << ")\n";
+            std::cout << "Hit " << segments0.size() << " segments\n";
+            double normconst1=std::accumulate(probs1.begin(), probs1.end(), 0.0);
+            std::cout << "Exact = " << normconst1 << " Approx = " << normconst0 << "\n";
+            std::cout << "Old prob max = " << prob_max << "\n";
+            std::cout << "New prob max = " << normconst0 << "\n";
+            prob_max=normconst0;
+        }
     }
-    std::vector<NuGeom::LineSegment> segments0;
 
-    world->GetLineSegments(ray0, segments0);
+    constexpr double safety_factor = 1.5;
+    prob_max *= safety_factor;
 
-    // Calculate interaction location
-    std::map<std::string,double> meanfreepaths{
-        {"Water",1e+12},
-        {"Air",1e+13},
-        {"Argon",1e+14}
-    };
-
-    
-
-    std::vector<double> probs0(segments0.size());
-    std::vector<double> probs1(segments0.size());
-    std::vector<double> seglength0(segments0.size());
-    
-    std::vector<std::string> material0(segments0.size());
-
-    // Calculate probability to interact for each line segment
-    // Calculate probability to interact for each line segment
-    for (size_t i=0; i<segments0.size(); ++i){
-        material0[i]=segments0[i].GetMaterial().Name();
-        // NOTE: This only works for l/meanfreepath tiny
-        probs0[i]=segments0[i].Length()/meanfreepaths[material0[i]];
-        std::cout << -segments0[i].Length()/meanfreepaths[material0[i]] << std::endl;
-        probs1[i]=1-exp(-segments0[i].Length()/meanfreepaths[material0[i]]);
-
-        // For testing only:
-        seglength0[i] = segments0[i].Length();
-    }
-    double normconst0=std::accumulate(probs0.begin(), probs0.end(), 0.0);
-    // TODO: Determine if interaction occurs or not
-    // 1. Define a warm-up step to find the maximum allowed total prob over a line segment (prob_max)
-    // 2. Add some safety factor to scale by (prob_max = safety_factor * prob_max)
-    // 3. Interaction occurs if prob / prob_max < R1 (R1 random number in [0, 1) )
-    // 4. Determine where it occurs by throwing R2 and finding where \sum_i probs_i > R2 and pick region i
-    // 5. Since probs << 1, select by choosing the point given by segement.start + segement.end * (probs[i] - (R2 - sum_{j=0}^{i-1} probs[j]))/ probs[i]
-    // 6. Return the interaction point to the user
-    //
-    // Setup Random number generator, seed, and generate random number in [0, 1)
     auto rand = NuGeom::Random::Instance();
-    rand.Seed(2309182305);
-    double r1 = rand.Uniform(0.0, 1.0);
+    double nrays = 0;
+    size_t nhits = 0;
+    std::ofstream hist;
+    hist.open("hit_locations.txt");
 
-    for (size_t i=0; i<segments0.size(); ++i) probs0[i]=probs0[i]/normconst0;
-    std::ofstream hist_exp;
-    std::ofstream hist_exp2;
-    hist_exp.open("histogram_exp.txt");
-    hist_exp2.open("histogram_exp_detailed.txt");
+    // Send Ray for check to hit
+    for(size_t i = 0; i < ntrials; ++i) {
+        nrays += 1.0/prob_max;
+        if(i % 10000 == 0) {
+            std::cout << "Shot " << nrays << " rays\n";
+        }
+        NuGeom::Ray ray = ShootRay({-2, -2, -2}, {2, 2, -2});
+        std::vector<NuGeom::LineSegment> segments0;
 
-    for (size_t i = 0; i <probs0.size() ; i++) {
-        hist_exp2 << seglength0[i]<< " , " << material0[i] << " , " << i << " , " << probs0[i] << ", " << probs1[i]  << std::endl;
-        hist_exp << i << "," << probs0[i] << "\n";
-        //std::cout<< segments0[i].Start().X() << " "<< segments0[i].Start().Y() <<" " << segments0[i].Start().Z() << std::endl;
-    }
-    hist_exp.close();
-    hist_exp2.close();
+        world->GetLineSegments(ray, segments0);
+
+        std::vector<double> probs0(segments0.size());
+        std::vector<double> probs1(segments0.size());
+        std::vector<double> seglength0(segments0.size());
+        
+        std::vector<std::string> material0(segments0.size());
+
+        // Calculate probability to interact for each line segment
+        for (size_t j=0; j<segments0.size(); ++j){
+            material0[j]=segments0[j].GetMaterial().Name();
+            // NOTE: This only works for l/meanfreepath tiny
+            probs0[j]=segments0[j].Length()/meanfreepaths[material0[j]];
+            // std::cout << -segments0[i].Length()/meanfreepaths[material0[i]] << std::endl;
+            probs1[j]=1-exp(-segments0[j].Length()/meanfreepaths[material0[j]]);
+
+            // For testing only:
+            seglength0[j] = segments0[j].Length();
+        }
+        double normconst0=std::accumulate(probs0.begin(), probs0.end(), 0.0);
+        // TODO: Determine if interaction occurs or not
+        // 1. Define a warm-up step to find the maximum allowed total prob over a line segment (prob_max)
+        // 2. Add some safety factor to scale by (prob_max = safety_factor * prob_max)
+        // 3. Interaction occurs if prob / prob_max < R1 (R1 random number in [0, 1) )
+        // 4. Determine where it occurs by throwing R2 and finding where \sum_i probs_i > R2 and pick region i
+        // 5. Since probs << 1, select by choosing the point given by segement.start + (segement.end - segement.start) * (probs[i] - (R2 - sum_{j=0}^{i-1} probs[j]))/ probs[i]
+        // 6. Return the interaction point to the user
+        //
+        // Setup Random number generator, seed, and generate random number in [0, 1)
+        // auto rand = NuGeom::Random::Instance();
+        // rand.Seed(2309182305);
+        // double r1 = rand.Uniform(0.0, 1.0);
+        if(normconst0 / prob_max < rand.Uniform(0.0, 1.0)) {
+            continue;
+        }
+        nhits++;
+        std::cout << nhits << " / " << nrays << "\n";
+
+        for(size_t j=0; j<segments0.size(); ++j) probs0[j]/=normconst0;
+        double sum = 0;
+        size_t idx = 0;
+        double r2 = rand.Uniform(0.0, 1.0);
+        NuGeom::Vector3D position;
+        for(size_t j = 0; j < probs0.size(); ++j) {
+            sum += probs0[j]; 
+            if(sum > r2) {
+                idx = j;
+                position = segments0[j].Start() + (segments0[j].End() - segments0[j].Start()) * (sum - r2)/probs0[j]; 
+                break;
+            }
+        }
+
+        std::cout << "Start: " << segments0[idx].Start() << "\n";
+        std::cout << "End: " << segments0[idx].End() << "\n";
+        std::cout << "Sum: " << sum << " R2: " << r2 << " Prob: " << probs0[idx] << " Dist: " << (sum - r2)/probs0[idx] << "\n";
+        std::cout << "Hit Location: " << position << "\n";
+
+        hist << position.X() << "," << position.Y() << "," << position.Z() << "\n";
+        if(nhits == 10000) break;
+    } 
+
+    hist.close();
 
     return 0;
+
+    /*
 
     std::random_device rd0;
     std::mt19937 rand_gen0(rd0());
@@ -578,4 +626,5 @@ int main(){
     
 
     return 0;
+    */
 }
