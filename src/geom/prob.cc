@@ -25,44 +25,56 @@ using NuGeom::PhysicalVolume;
 using NuGeom::Vector3D;
 
 
-// class DetectorSim {
-//     public:
-//         void Setup(const std::string &geometry) {
-//             // Create world from geometry
+ class DetectorSim {
+     public:
+         void Setup(const std::string &geometry) {
+             // Create world from geometry
 
-//             NuGeom::GDMLParser parser(geometry);
-//             world = parser.GetWorld();
-//         }
+             NuGeom::GDMLParser parser(geometry);
+             world = parser.GetWorld();
+         }
 
-//         std::vector<NuGeom::Material> GetMaterials() {
-//             // return materials in detector
-//         }
+         std::vector<NuGeom::Material> GetMaterials() {
+             // return materials in detector
+            return m_mats;
+         }
 
-//         void GetMeanFreePath(const std::vector<double> &cross_section) {
-//             // Fill result mfp
-//             if(cross_section.size() != m_mats.size())
-//                 throw "ERROR";
+         void GetMeanFreePath(const std::vector<double> &cross_section) {
+             // Fill result mfp
+             if(cross_section.size() != m_mats.size())
+                 throw "ERROR";
 
-//             for(size_t i = 0; i < m_mats.size(); ++i) {
-//                 m_mfp[m_mats[i]] = cross_section[i];
-//             }
-//         }
+             for(size_t i = 0; i < m_mats.size(); ++i) {
+                 m_mfp[m_mats[i]] = cross_section[i];
+             }
+         }
 
-//         std::pair<Vector3D, NuGeom::Material> GetInteraction(const NuGeom::Ray &ray) {
-//             auto segments = world.GetLineSegments(ray);
-//             Vector3D point;
-//             NuGeom::Material mat;
-//             // Choose interaction point
-//             return {point, mat};
-//         }
+         std::pair<Vector3D, NuGeom::Material> GetInteraction(const NuGeom::Ray &ray) {
+             auto segments = world.GetLineSegments(ray);
+             Vector3D point;
+             NuGeom::Material mat;
+             // Choose interaction point
+             return {point, mat};
+         }
 
-//     private:
-//         NuGeom::World world;
-//         std::vector<std::shared_ptr<NuGeom::Shape>> shapes;
-//         std::vector<NuGeom::Material> m_mats;
-//         std::map<NuGeom::Material, double> m_mfp;
+         void max_prob(const NuGeom::Ray &rays ) {
+            // Find max probability for interaction
 
-// };
+            
+         }
+
+     private:
+         NuGeom::World world;
+         std::vector<std::shared_ptr<NuGeom::Shape>> shapes;
+         std::vector<NuGeom::Material> m_mats;
+         std::map<NuGeom::Material, double> m_mfp;
+
+
+//Find max prob
+    
+ };
+// 
+
 
 NuGeom::Ray ShootRay(const NuGeom::Vector3D &corner1, const NuGeom::Vector3D &corner2) {
     auto [xmin, xmax] = std::minmax(corner1.X(), corner2.X());
