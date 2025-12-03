@@ -9,6 +9,13 @@
 using NuGeom::LogicalVolume;
 using NuGeom::PhysicalVolume;
 
+void LogicalVolume::GetMaterials(std::set<Material> &mats) const {
+    mats.insert(m_material);
+    for(const auto &daughter : m_daughters) {
+        daughter->GetLogicalVolume()->GetMaterials(mats);
+    }
+}
+
 double LogicalVolume::Mass() const {
     return Volume() * m_material.Density()
         + DaughterMass();

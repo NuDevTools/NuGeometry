@@ -2,6 +2,7 @@
 
 #include "geom/Material.hh"
 #include "geom/Shape.hh"
+#include <set>
 
 namespace NuGeom {
 
@@ -15,6 +16,7 @@ class LogicalVolume {
             : m_material{std::move(material)}, m_shape{std::move(shape)} {}
 
         Material GetMaterial() const { return m_material; }
+        void GetMaterials(std::set<Material> &) const;
         Shape* GetShape() const { return m_shape.get(); }
         std::shared_ptr<LogicalVolume> Mother() const { return m_mother; }
         const std::vector<std::shared_ptr<PhysicalVolume>>& Daughters() const { return m_daughters; }

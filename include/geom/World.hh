@@ -21,6 +21,7 @@ class World {
 
         Shape* GetShape(size_t idx) const;
         Material GetMaterial(size_t idx) const;
+        std::vector<Material> GetMaterials() const;
 
         bool InWorld(const Vector3D&) const;
         bool SphereTrace(const Ray&, double&, size_t&, size_t&) const;

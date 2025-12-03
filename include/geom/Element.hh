@@ -37,6 +37,7 @@ class Element {
 
         std::string Name() const { return m_name; }
         std::string Symbol() const { return m_symbol; }
+        size_t PDG() const;
         size_t Z() const { return m_Z; }
         size_t A() const { return m_A; }
         double Mass() const { return m_mass; }

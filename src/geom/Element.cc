@@ -2,6 +2,7 @@
 #include "geom/Units.hh"
 // #include "yaml-cpp/yaml.h"
 
+#include <cmath>
 #include <stdexcept>
 
 using NuGeom::Element;
@@ -41,6 +42,13 @@ Element::Element(const std::string &name, const std::string &symbol,
     if(CommonElements().find(symbol) == CommonElements().end()) {
         CommonElements()[symbol] = *this;
     }
+}
+
+size_t Element::PDG() const {
+    static constexpr size_t base = 1000000000;
+    static constexpr size_t zbase = 10000;
+    static constexpr size_t abase = 10;
+    return base + m_Z * zbase + m_A * abase;
 }
 
 // void NuGeom::LoadElements(const YAML::Node &node) {

@@ -1,16 +1,11 @@
 #include <iostream>
-#include <typeinfo>
-#include <climits>
-#include <iomanip>
-#include <typeinfo>
 #include <fstream>
-#include <sstream>
 #include <cstdlib>
 #include <cmath>
 #include <ctime>
+#include "geom/Material.hh"
 #include "geom/Vector3D.hh"
 #include <numeric>
-#include <random>
 #include <map>
 #include <string>
 #include "geom/Volume.hh"
@@ -24,57 +19,93 @@ using NuGeom::LogicalVolume;
 using NuGeom::PhysicalVolume;
 using NuGeom::Vector3D;
 
+using LineSegments = std::vector<NuGeom::LineSegment>;
+using HandledRay = std::pair<std::vector<double>, LineSegments>;
+using GeneratorCallback = std::function<double(double, size_t)>;
 
- class DetectorSim {
-     public:
-         void Setup(const std::string &geometry) {
-             // Create world from geometry
+class DetectorSim {
+public:
+    void Setup(const std::string &geometry) {
+        // Create world from geometry
+        pugi::xml_document doc;
+        pugi::xml_parse_result result = doc.load_file(geometry.c_str());
+        if(!result)
+            throw std::runtime_error("GDMLParser: Invalid file");
+        NuGeom::GDMLParser parser(doc);
+        world = parser.GetWorld();
+    }
 
-             NuGeom::GDMLParser parser(geometry);
-             world = parser.GetWorld();
-         }
+    void Init(const std::vector<std::pair<double, NuGeom::Ray>> &energy_rays, double safety_factor) {
+        // Calculate the max_prob and store it with the safety factor
+        for(const auto [energy, ray] : energy_rays) {
+            auto [probs, segments] = HandleRay(energy, ray);
+            auto prob_tot = std::accumulate(probs.begin(), probs.end(), 0.0);
+            if(prob_tot > max_prob) max_prob = prob_tot;
+        }
 
-         std::vector<NuGeom::Material> GetMaterials() {
-             // return materials in detector
-            return m_mats;
-         }
+        max_prob *= safety_factor;
+    }
 
-         void GetMeanFreePath(const std::vector<double> &cross_section) {
-             // Fill result mfp
-             if(cross_section.size() != m_mats.size())
-                 throw "ERROR";
+    std::vector<NuGeom::Material> GetMaterials() const { return world.GetMaterials(); }
 
-             for(size_t i = 0; i < m_mats.size(); ++i) {
-                 m_mfp[m_mats[i]] = cross_section[i];
-             }
-         }
+    void GetMeanFreePath(const std::vector<double> &cross_section) {
+        // Fill result mfp
+        if(cross_section.size() != m_mats.size())
+            throw "ERROR";
 
-         std::pair<Vector3D, NuGeom::Material> GetInteraction(const NuGeom::Ray &ray) {
-             auto segments = world.GetLineSegments(ray);
-             Vector3D point;
-             NuGeom::Material mat;
-             // Choose interaction point
-             return {point, mat};
-         }
+        for(size_t i = 0; i < m_mats.size(); ++i) {
+            m_mfp[m_mats[i]] = cross_section[i];
+        }
+    }
 
-         void max_prob(const NuGeom::Ray &rays ) {
-            // Find max probability for interaction
+    std::pair<Vector3D, NuGeom::Material> GetInteraction(double energy, const NuGeom::Ray &ray) {
+        auto [probs, segments] = HandleRay(energy, ray);
+        Vector3D point;
+        NuGeom::Material mat;
+        // Choose interaction point
+        return {point, mat};
+    }
 
-            
-         }
+    double CalculateCrossSection(double energy, const NuGeom::Material mat) {
+        double cross_section = 0;
+        for(const auto &elm : mat.Elements()) {
+           cross_section += xsec_callback(energy, elm.PDG()); 
+        }
+        return cross_section;
+    }
 
-     private:
-         NuGeom::World world;
-         std::vector<std::shared_ptr<NuGeom::Shape>> shapes;
-         std::vector<NuGeom::Material> m_mats;
-         std::map<NuGeom::Material, double> m_mfp;
+    // Expects a function that returns the total cross section per nucleus given the energy and the PDG code of the target
+    void SetGeneratorCallback(GeneratorCallback &xsec) { xsec_callback = xsec; }
 
+    void MaxProb(const NuGeom::Ray &rays) {
+        // Find max probability for interaction
+    }
 
-//Find max prob
+private:
+    HandledRay HandleRay(double energy, const NuGeom::Ray &ray);
+    double CalculateMeanFreePath(double energy, const NuGeom::Material &material);
     
- };
-// 
+    NuGeom::World world;
+    std::vector<std::shared_ptr<NuGeom::Shape>> shapes;
+    std::vector<NuGeom::Material> m_mats;
+    std::map<NuGeom::Material, double> m_mfp;
+    GeneratorCallback xsec_callback;
+    double max_prob = 0;
+};
 
+HandledRay DetectorSim::HandleRay(double energy, const NuGeom::Ray &ray) {
+    LineSegments segments = world.GetLineSegments(ray);
+
+    // Calculate probability to interact for each line segment
+    std::vector<double> probs;
+    for(const auto &segment : segments) {
+        auto material = segment.GetMaterial();
+        auto meanfreepath = CalculateMeanFreePath(energy, material);
+        probs.push_back(segment.Length()/meanfreepath);
+    }
+
+    return {probs, segments};
+}
 
 NuGeom::Ray ShootRay(const NuGeom::Vector3D &corner1, const NuGeom::Vector3D &corner2) {
     auto [xmin, xmax] = std::minmax(corner1.X(), corner2.X());
@@ -99,11 +130,11 @@ int main(){
     mat.AddElement(NuGeom::Element("Hydrogen", 1, 1), 2);
     mat.AddElement(NuGeom::Element("Oxygen", 8, 16), 1);
     mat1.AddElement(NuGeom::Element("Argon", 18, 40), 1);
-   
+
     // Define the interaction geometry
     // Define the inner detector
     auto inner_box = std::make_shared<NuGeom::Box>(NuGeom::Vector3D{1, 1, 1}); // Define a 1x1x1 box
-   
+
     auto inner_vol = std::make_shared<LogicalVolume>(mat, inner_box); 
     NuGeom::RotationX3D rot(45*M_PI/180.0);
     auto inner_pvol = std::make_shared<PhysicalVolume>(inner_vol, NuGeom::Transform3D{}, rot);
@@ -191,7 +222,7 @@ int main(){
         std::vector<double> probs0(segments0.size());
         std::vector<double> probs1(segments0.size());
         std::vector<double> seglength0(segments0.size());
-        
+
         std::vector<std::string> material0(segments0.size());
 
         // Calculate probability to interact for each line segment

@@ -4,6 +4,7 @@
 #include <limits>
 #include <iostream>
 #include <deque>
+#include <set>
 
 using NuGeom::World;
 
@@ -19,6 +20,16 @@ NuGeom::Material World::GetMaterial(size_t idx) const {
     else {
         return m_volume -> Daughters()[idx-1]->GetLogicalVolume()->GetMaterial();
     }
+}
+
+std::vector<NuGeom::Material> World::GetMaterials() const {
+    std::set<NuGeom::Material> material_set;
+    material_set.insert(m_volume->GetMaterial());
+    for(const auto &daughter : m_volume->Daughters()) {
+        daughter->GetLogicalVolume()->GetMaterials(material_set);
+    }
+    std::vector<NuGeom::Material> materials(material_set.begin(), material_set.end());
+    return materials;
 }
 
 bool World::InWorld(const Vector3D &pos) const {
