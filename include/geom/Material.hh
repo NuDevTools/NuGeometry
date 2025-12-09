@@ -70,7 +70,7 @@ class Material {
         }
 
     private:
-        std::string m_name;
+        std::string m_name = "Dummy";
         std::vector<Element> m_elements;
         std::vector<double> m_fractions;
         std::vector<int> m_natoms;
