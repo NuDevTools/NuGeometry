@@ -77,13 +77,62 @@ public:
     // Expects a function that returns the total cross section per nucleus given the energy and the PDG code of the target
     void SetGeneratorCallback(GeneratorCallback &xsec) { xsec_callback = xsec; }
 
-    void MaxProb(const NuGeom::Ray &rays) {
+    //Event Generator is in control 
+    //Materials GetMaterials(Ray)
+    std::vector<NuGeom::Material> GetMaterials(const NuGeom::Ray &rays) {
+        std::vector<NuGeom::Material> mats;
+        auto segments = world.GetLineSegments(rays);
+        for(const auto &segment : segments) {
+            mats.push_back(segment.GetMaterial());
+        }
+        return mats;
+    }
+   
+    void EvaluateProbs(const NuGeom::Ray &rays) {
         // Find max probability for interaction
+        auto segments = world.GetLineSegments(rays);
+        std::vector<NuGeom::Material> mats;
+        std::vector<double> probs;
+
+        for(const auto &segment : segments) {
+            auto material = segment.GetMaterial();
+            mats.push_back(material);
+
+            // Example: obtain cross-section vector from material before calling
+            // (adjust accessor name to your Material API)
+            /*const std::vector<double> &cross_section = material.GetCrossSection();
+
+            // Call the function with a variable/expression, not with a type declaration
+            auto meanfreepath = GetMeanFreePath(cross_section);
+
+            probs.push_back(segment.Length() / meanfreepath); */
+        }
+    }
+    
+
+    NuGeom::Vector3D Interaction(const std::vector<double>& xsecsmaps) {
+    // Evaluate interaction probability
+    double prob = EvaluateProbs(xsecsmaps);
+
+    // Draw random uniform [0,1)
+    double r = NuGeom::Random::Instance().Uniform(0.0, 1.0);
+
+    // If interaction occurs
+    if (prob > r) {
+        return xsec;  
     }
 
+    // No interaction occurred
+    return NuGeom::Vector3D(9e9, 9e9, 9e9);
+}
+    
+
+    
+
+   
 private:
     HandledRay HandleRay(double energy, const NuGeom::Ray &ray);
-    double CalculateMeanFreePath(double energy, const NuGeom::Material &material);
+    double CalculateMeanFreePath(double energy, const NuGeom::Material &material); 
     
     NuGeom::World world;
     std::vector<std::shared_ptr<NuGeom::Shape>> shapes;
@@ -121,6 +170,8 @@ NuGeom::Ray ShootRay(const NuGeom::Vector3D &corner1, const NuGeom::Vector3D &co
     NuGeom::Vector3D direction{sintheta*cos(phi), sintheta*sin(phi), costheta};
 
     return NuGeom::Ray(position, direction);
+
+
 }
 
 int main(){
