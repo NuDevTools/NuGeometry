@@ -79,11 +79,12 @@ public:
 
     //Event Generator is in control 
     //Materials GetMaterials(Ray)
-    std::vector<NuGeom::Material> GetMaterials(const NuGeom::Ray &rays) {
-        std::vector<NuGeom::Material> mats;
+
+    std::set<NuGeom::Material> GetMaterials(const NuGeom::Ray &rays) {
+        std::set<NuGeom::Material> mats;
         auto segments = world.GetLineSegments(rays);
         for(const auto &segment : segments) {
-            mats.push_back(segment.GetMaterial());
+            mats.insert(segment.GetMaterial());
         }
         return mats;
     }
