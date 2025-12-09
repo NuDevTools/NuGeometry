@@ -37,7 +37,7 @@ public:
 
     void Init(const std::vector<std::pair<double, NuGeom::Ray>> &energy_rays, double safety_factor) {
         // Calculate the max_prob and store it with the safety factor
-        for(const auto [energy, ray] : energy_rays) {
+        for(const auto &[energy, ray] : energy_rays) {
             auto [probs, segments] = HandleRay(energy, ray);
             auto prob_tot = std::accumulate(probs.begin(), probs.end(), 0.0);
             if(prob_tot > max_prob) max_prob = prob_tot;
@@ -88,44 +88,66 @@ public:
         }
         return mats;
     }
-   
-    void EvaluateProbs(const NuGeom::Ray &rays) {
-        // Find max probability for interaction
-        auto segments = world.GetLineSegments(rays);
-        std::vector<NuGeom::Material> mats;
+    //give line segments,
+
+    //gets linesegments given a ray
+    LineSegments GetLineSegments(const NuGeom::Ray &ray) {
+        return world.GetLineSegments(ray);
+    }
+
+    //give map of materials to cross-sections
+
+    std::vector<double> EvaluateProbs(const LineSegments &segments, const std::map<NuGeom::Material, double> &xsecsmaps) {
+        
         std::vector<double> probs;
 
         for(const auto &segment : segments) {
             auto material = segment.GetMaterial();
-            mats.push_back(material);
+            auto cross_section = xsecsmaps.at(material);
+            auto meanfreepath = 1.0 / (cross_section * material.Density());
+            probs.push_back(segment.Length() / meanfreepath);
 
-            // Example: obtain cross-section vector from material before calling
-            // (adjust accessor name to your Material API)
-            /*const std::vector<double> &cross_section = material.GetCrossSection();
-
-            // Call the function with a variable/expression, not with a type declaration
-            auto meanfreepath = GetMeanFreePath(cross_section);
-
-            probs.push_back(segment.Length() / meanfreepath); */
         }
+        auto total_prob = std::accumulate(probs.begin(), probs.end(), 0.0);
+        if (total_prob > max_prob) {
+            max_prob = total_prob;
+        }
+
+        return probs;
     }
     
 
-    NuGeom::Vector3D Interaction(const std::vector<double>& xsecsmaps) {
+    NuGeom::Vector3D Interaction(const LineSegments &segments, const std::map<NuGeom::Material, double> &xsecsmaps) {
+            
     // Evaluate interaction probability
-    double prob = EvaluateProbs(xsecsmaps);
+    auto prob = EvaluateProbs(segments, xsecsmaps);
 
     // Draw random uniform [0,1)
-    double r = NuGeom::Random::Instance().Uniform(0.0, 1.0);
+    double r1 = NuGeom::Random::Instance().Uniform(0.0, 1.0);
 
     // If interaction occurs
-    if (prob > r) {
-        return xsec;  
+    auto total_prob = std::accumulate(prob.begin(), prob.end(), 0.0);
+    if (total_prob/(max_prob * 1.5) < r1) {
+        // No interaction occurred
+        return NuGeom::Vector3D(9e9, 9e9, 9e9);
     }
-
-    // No interaction occurred
-    return NuGeom::Vector3D(9e9, 9e9, 9e9);
-}
+    double r2 = NuGeom::Random::Instance().Uniform(0.0, 1.0);
+    // Select interaction segment
+    double cumulative_prob = 0.0;
+    size_t idx = 0;
+    for (size_t i = 0; i < prob.size(); ++i) {
+        cumulative_prob += prob[i];
+        if (cumulative_prob >= r2) {
+            idx = i;
+            break;
+        }
+    }
+    // Determine interaction location within the segment
+    double segment_length = segments[idx].Length();
+    double interaction_distance = (r2 - (cumulative_prob - prob[idx])) / prob[idx] * segment_length;
+    NuGeom::Vector3D interaction_point = segments[idx].Start() + (segments[idx].End() - segments[idx].Start()).Unit() * interaction_distance;
+    return interaction_point;
+    }
     
 
     
