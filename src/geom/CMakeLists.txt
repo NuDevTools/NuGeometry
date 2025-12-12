@@ -28,7 +28,7 @@ add_executable(prob_test
     prob.cc
 )
 target_link_libraries(prob_test PRIVATE project_options project_warnings
-                                PUBLIC geom)
+                                PUBLIC geom CLI11::CLI11)
 
 if(ENABLE_PYTHON)
     pybind11_add_module(nugeom PythonInterface.cc)

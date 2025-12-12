@@ -33,6 +33,14 @@ CPMAddPackage(
 )
 add_library(spdlog::spdlog ALIAS spdlog)
 
+CPMAddPackage(
+    NAME cli11
+    VERSION 2.6.1
+    GITHUB_REPOSITORY CLIUtils/CLI11
+    OPTIONS
+)
+add_library(CLI11::CLI11 ALIAS CLI11)
+
 #pybind11
 CPMAddPackage(
     NAME pybind11

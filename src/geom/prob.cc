@@ -13,19 +13,25 @@
 #include "geom/LineSegment.hh"
 #include "geom/Parser.hh"
 #include "geom/Random.hh"
+#include "geom/World.hh"
+#include "spdlog/sinks/stdout_color_sinks.h"
 #include "spdlog/spdlog.h"
+#include "CLI/CLI.hpp"
 
 using NuGeom::LogicalVolume;
 using NuGeom::PhysicalVolume;
 using NuGeom::Vector3D;
 
 using LineSegments = std::vector<NuGeom::LineSegment>;
+using EnergyRay = std::pair<double, NuGeom::Ray>;
 using HandledRay = std::pair<std::vector<double>, LineSegments>;
 using GeneratorCallback = std::function<double(double, size_t)>;
-using RayGenCallback = std::function<std::pair<double, NuGeom::Ray>()>;
+using RayGenCallback = std::function<EnergyRay()>;
 
 class DetectorSim {
 public:
+    DetectorSim(double safety_factor=1.5) : m_safety_factor{safety_factor} {}
+
     void Setup(const std::string &geometry) {
         // Create world from geometry
         pugi::xml_document doc;
@@ -38,15 +44,20 @@ public:
 
     void Setup(NuGeom::World world_) { world = world_; }
 
-    void Init(const std::vector<std::pair<double, NuGeom::Ray>> &energy_rays, double safety_factor) {
+    void Init(size_t nrays) {
         // Calculate the max_prob and store it with the safety factor
-        for(const auto &[energy, ray] : energy_rays) {
+        for(size_t i = 0; i < nrays; ++i) {
+            auto [energy, ray] = ray_gen_callback();
             auto [probs, segments] = HandleRay(energy, ray);
             auto prob_tot = std::accumulate(probs.begin(), probs.end(), 0.0);
-            if(prob_tot > max_prob) max_prob = prob_tot;
+            if(prob_tot > max_prob) {
+                spdlog::debug("Updating max prob: {} -> {}", max_prob, prob_tot);
+                max_prob = prob_tot;
+            }
         }
 
-        max_prob *= safety_factor;
+        max_prob *= m_safety_factor;
+        spdlog::info("Maximum probability found with safety factor ({}): {}", m_safety_factor, max_prob);
     }
 
     std::vector<NuGeom::Material> GetMaterials() const { return world.GetMaterials(); }
@@ -86,9 +97,9 @@ public:
     }
 
     // Expects a function that returns the total cross section per nucleus given the energy and the PDG code of the target
-    void SetGeneratorCallback(GeneratorCallback &xsec) { xsec_callback = xsec; }
+    void SetGeneratorCallback(GeneratorCallback xsec) { xsec_callback = xsec; }
     // Expects a function that returns the next ray to propagate 
-    void SetRayGenCallback(RayGenCallback &ray_gen) { ray_gen_callback = ray_gen; }
+    void SetRayGenCallback(RayGenCallback ray_gen) { ray_gen_callback = ray_gen; }
 
     //Event Generator is in control 
     //Materials GetMaterials(Ray)
@@ -163,6 +174,7 @@ private:
     double CalculateCrossSection(double energy, const NuGeom::Material mat) const {
         double cross_section = 0;
         for(const auto &elm : mat.Elements()) {
+            spdlog::trace("Element: {}", elm.PDG());
             cross_section += xsec_callback(energy, elm.PDG()); 
         }
         return cross_section;
@@ -175,6 +187,7 @@ private:
     GeneratorCallback xsec_callback;
     RayGenCallback ray_gen_callback;
     double max_prob = 0;
+    double m_safety_factor;
 };
 
 HandledRay DetectorSim::HandleRay(double energy, const NuGeom::Ray &ray) const {
@@ -196,23 +209,79 @@ double DetectorSim::CalculateMeanFreePath(double energy, const NuGeom::Material 
     return 1.0 / (xsec * mat.Density());
 }
 
-NuGeom::Ray ShootRay(const NuGeom::Vector3D &corner1, const NuGeom::Vector3D &corner2) {
-    auto [xmin, xmax] = std::minmax(corner1.X(), corner2.X());
-    auto [ymin, ymax] = std::minmax(corner1.Y(), corner2.Y());
-    auto [zmin, zmax] = std::minmax(corner1.Z(), corner2.Z());
+class TestRayGen {
+public:
+    TestRayGen(double emin, double emax,
+               NuGeom::Vector3D corner1, NuGeom::Vector3D corner2) :
+        m_emin{emin}, m_emax{emax} {
+        auto [xmin, xmax] = std::minmax(corner1.X(), corner2.X());
+        auto [ymin, ymax] = std::minmax(corner1.Y(), corner2.Y());
+        auto [zmin, zmax] = std::minmax(corner1.Z(), corner2.Z());
+        m_xmin = xmin;
+        m_xmax = xmax;
+        m_ymin = ymin;
+        m_ymax = ymax;
+        m_zmin = zmin;
+        m_zmax = zmax;
+    }
 
-    auto rand = NuGeom::Random::Instance();
+    EnergyRay GetRay() const {
+        auto ray = ShootRay();
+        double energy = NuGeom::Random::Instance().Uniform(m_emin, m_emax);
+        return {energy, ray};
+    }
 
-    NuGeom::Vector3D position{rand.Uniform(xmin, xmax), rand.Uniform(ymin, ymax), rand.Uniform(zmin, zmax)};
-    double costheta = rand.Uniform(0.0, 1.0);
-    double sintheta = std::sqrt(1-costheta*costheta);
-    double phi = rand.Uniform(0.0, 2*M_PI);
-    NuGeom::Vector3D direction{sintheta*cos(phi), sintheta*sin(phi), costheta};
+private:
+    NuGeom::Ray ShootRay() const {
+        auto rand = NuGeom::Random::Instance();
 
-    return NuGeom::Ray(position, direction);
-}
+        NuGeom::Vector3D position{rand.Uniform(m_xmin, m_xmax),
+                                  rand.Uniform(m_ymin, m_ymax),
+                                  rand.Uniform(m_zmin, m_zmax)};
+        double costheta = rand.Uniform(0.0, 1.0);
+        double sintheta = std::sqrt(1-costheta*costheta);
+        double phi = rand.Uniform(0.0, 2*M_PI);
+        NuGeom::Vector3D direction{sintheta*cos(phi), sintheta*sin(phi), costheta};
 
-int main(){
+        return NuGeom::Ray(position, direction);
+    }
+
+    double m_emin, m_emax;
+    double m_xmin, m_xmax;
+    double m_ymin, m_ymax;
+    double m_zmin, m_zmax;
+};
+
+class TestEventGen {
+public:
+    TestEventGen(std::map<size_t, double> xsec) : m_xsec{xsec} {}
+
+    double CrossSection(double, size_t pdg) const {
+        return m_xsec.at(pdg);
+    }
+
+private:
+    std::map<size_t, double> m_xsec;
+};
+
+int main(int argc, char **argv){
+    auto console = spdlog::stdout_color_mt("NuGeom");
+    spdlog::set_default_logger(console);
+    spdlog::set_pattern("[%n] [%^%l%$] %v");
+    CLI::App app("Neutrino Geometry Driver");
+    argv = app.ensure_utf8(argv);
+    int verbosity = 0;
+    app.add_flag("-v,--verbose", verbosity, "Increase the verbosity level");
+
+    try {
+        app.parse(argc, argv);
+    } catch (const CLI::ParseError &e) {
+        return app.exit(e);
+    }
+
+    if(verbosity == 1) spdlog::set_level(spdlog::level::debug);
+    else if(verbosity == 2) spdlog::set_level(spdlog::level::trace);
+    
     // Define materials in the detector
     NuGeom::Material mat("Water", 1.0, 2);
     NuGeom::Material mat1("Argon", 9.0, 1);
@@ -228,7 +297,6 @@ int main(){
     NuGeom::RotationX3D rot(45*M_PI/180.0);
     auto inner_pvol = std::make_shared<PhysicalVolume>(inner_vol, NuGeom::Transform3D{}, rot);
 
-
     // Define the outer detector
     auto outer_box = std::make_shared<NuGeom::Box>(NuGeom::Vector3D{2, 2, 2});
     auto outer_vol = std::make_shared<LogicalVolume>(mat1, outer_box); 
@@ -240,10 +308,32 @@ int main(){
 
     // Define the "World"
     auto world_box = std::make_shared<NuGeom::Box>(NuGeom::Vector3D{4, 4, 4});
-    auto world = std::make_shared<LogicalVolume>(mat, world_box);
-    outer_vol->SetMother(world); 
-    world -> AddDaughter(outer_pvol);
+    auto world_vol = std::make_shared<LogicalVolume>(mat, world_box);
+    outer_vol->SetMother(world_vol); 
+    world_vol -> AddDaughter(outer_pvol);
+    NuGeom::World world(world_vol);
 
+    // Setup DetectorSim
+    DetectorSim sim;
+    sim.Setup(world);
+
+    // Set callbacks and initialize the interaction placement (i.e. find max probability)
+    auto raygen = std::make_shared<TestRayGen>(0, 10, NuGeom::Vector3D{-2, -2, -2},
+                                               NuGeom::Vector3D{2, 2, -2});
+    auto callback = [&](){ return raygen->GetRay(); };
+    sim.SetRayGenCallback(callback);
+
+    std::map<size_t, double> xsec_map = {{1000010010, 1e-5},
+                                         {1000080160, 1e-5},
+                                         {1000180400, 1e-5}};
+    auto event_gen = std::make_shared<TestEventGen>(xsec_map);
+    sim.SetGeneratorCallback([&](double energy, size_t pdg) { return event_gen->CrossSection(energy, pdg); });
+    size_t ntrials = 1 << 22;
+    sim.Init(ntrials);
+
+    return 0;
+
+    /*
     // Calculate interaction location
     std::map<std::string,double> meanfreepaths{
         {"Water",1e+7},
@@ -253,7 +343,6 @@ int main(){
 
     // Shoot Rays and get LineSegments
     double prob_max = 0;
-    size_t ntrials = 1 << 22;
     for(size_t i = 0; i < ntrials; ++i) {
         NuGeom::Ray ray = ShootRay({-2, -2, -2}, {2, 2, -2});
         std::vector<NuGeom::LineSegment> segments0;
@@ -358,4 +447,5 @@ int main(){
     hist.close();
 
     return 0;
+    */
 }
