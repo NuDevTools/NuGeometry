@@ -32,6 +32,7 @@ void Material::AddElement(const Element &elm, int natoms) {
         for(size_t i = 0; i < m_ncomponents; ++i) {
             m_fractions[i] /= total_mass;
         }
+        ComputeNumberDensities();
     }
 }
 
@@ -51,6 +52,7 @@ void Material::AddElement(const Element &elm, double fraction) {
         if(!NuGeom::is_close(sum, 1.0, 1e-4)) {
             spdlog::warn("Material: Mass fractions sum to {} and not 1", sum);
         }
+        ComputeNumberDensities();
     }
 }
 
@@ -74,6 +76,9 @@ void Material::AddMaterial(const Material &mat, double fraction) {
             AddElement(elm, fraction*mat.MassFractions()[idx++]);
         }
     }
+
+    if(m_elements.size() == m_ncomponents)
+        ComputeNumberDensities();
 }
 
 NuGeom::Element Material::SelectElement(double ran) const {
@@ -85,5 +90,24 @@ NuGeom::Element Material::SelectElement(double ran) const {
     while(true) {
         if(ran < sum) return m_elements[idx];
         sum += m_fractions[++idx];
+    }
+}
+
+double Material::NumberDensity(const Element &elm) const {
+    return m_number_densities.at(elm.PDG());
+}
+
+void Material::ComputeNumberDensities() {
+    static constexpr double Avogadro = 6.02214076e23;
+
+    for (size_t i = 0; i < m_elements.size(); ++i) {
+        const auto &elm = m_elements[i];
+        const double mass_fraction  = m_fractions[i];   // mass fraction
+        const double atomic_mass  = elm.Mass();        // g/mol
+
+        const double number_density =
+            (m_density * mass_fraction / atomic_mass) * Avogadro; // cm^-3
+
+        m_number_densities[elm.PDG()] = number_density;
     }
 }

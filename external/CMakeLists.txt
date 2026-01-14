@@ -18,13 +18,13 @@ CPMAddPackage(
 CPMAddPackage(
     NAME fmt
     GITHUB_REPOSITORY fmtlib/fmt
-    GIT_TAG 7.1.3
+    GIT_TAG 12.1.0
 )
 add_library(fmt::fmt ALIAS fmt)
 
 CPMAddPackage(
     NAME spdlog
-    VERSION 1.8.5
+    VERSION 1.16.0
     GITHUB_REPOSITORY gabime/spdlog
     OPTIONS
         "SPDLOG_COMPILED_LIB ON"

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "fmt/format.h"
+#include "fmt/ranges.h"
 #include <array>
 #include <cmath>
 
@@ -98,6 +100,8 @@ class Vector3D {
             return os;
         }
 
+        const std::array<double, 3>& data() const { return m_vec; }
+
     private:
         std::array<double, 3> m_vec;
 };
@@ -111,3 +115,16 @@ static constexpr Vector3D UnitY = Vector3D(0, 1, 0);
 static constexpr Vector3D UnitZ = Vector3D(0, 0, 1);
 
 }
+
+template <>
+struct fmt::formatter<NuGeom::Vector3D> : fmt::range_formatter<double, char> {
+    formatter() {
+        this->set_brackets("Vector3D(", ")");
+    }
+    
+    template <typename FormatContext>
+    auto format(const NuGeom::Vector3D& v, FormatContext& ctx) const {
+        return fmt::range_formatter<double, char>::format(v.data(), ctx);
+    }
+};
+

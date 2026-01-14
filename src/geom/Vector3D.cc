@@ -1,4 +1,5 @@
 #include "geom/Vector3D.hh"
+#include "fmt/format.h"
 
 using NuGeom::Vector3D;
 

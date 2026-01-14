@@ -1,5 +1,3 @@
-#include <iostream>
-#include <fstream>
 #include <cstdlib>
 #include <cmath>
 #include <ctime>
@@ -72,9 +70,11 @@ public:
         }
     }
 
-    std::pair<Vector3D, NuGeom::Material> GetInteraction(double energy, const NuGeom::Ray &ray) const {
+    std::pair<Vector3D, NuGeom::Material> GetInteraction() const {
+        auto [energy, ray] = ray_gen_callback();
         auto [probs, segments] = HandleRay(energy, ray);
         auto tot_probs = std::accumulate(probs.begin(), probs.end(), 0.0);
+        spdlog::debug("Probability / Max_Prop = {}", tot_probs / max_prob);
         if(tot_probs / max_prob < NuGeom::Random::Instance().Uniform(0.0, 1.0)) {
             // Return a dummy material if no interaction occurs
             return {{}, {}};
@@ -93,6 +93,8 @@ public:
                 break;
             }
         }
+        spdlog::debug("Interaction occured! Placing vertex at {} on {}",
+                      position, mat.Name());
         return {position, mat};
     }
 
@@ -171,14 +173,6 @@ public:
 private:
     HandledRay HandleRay(double energy, const NuGeom::Ray &ray) const;
     double CalculateMeanFreePath(double energy, const NuGeom::Material &material) const;
-    double CalculateCrossSection(double energy, const NuGeom::Material mat) const {
-        double cross_section = 0;
-        for(const auto &elm : mat.Elements()) {
-            spdlog::trace("Element: {}", elm.PDG());
-            cross_section += xsec_callback(energy, elm.PDG()); 
-        }
-        return cross_section;
-    }
 
     NuGeom::World world;
     std::vector<std::shared_ptr<NuGeom::Shape>> shapes;
@@ -205,8 +199,12 @@ HandledRay DetectorSim::HandleRay(double energy, const NuGeom::Ray &ray) const {
 }
 
 double DetectorSim::CalculateMeanFreePath(double energy, const NuGeom::Material &mat) const {
-    auto xsec = CalculateCrossSection(energy, mat);
-    return 1.0 / (xsec * mat.Density());
+    double mean_free_path = 0;
+    for(const auto &elm : mat.Elements()) {
+        spdlog::trace("Element: {}", elm.PDG());
+        mean_free_path += mat.NumberDensity(elm) * xsec_callback(energy, elm.PDG());
+    }
+    return 1.0/mean_free_path;
 }
 
 class TestRayGen {
@@ -323,13 +321,23 @@ int main(int argc, char **argv){
     auto callback = [&](){ return raygen->GetRay(); };
     sim.SetRayGenCallback(callback);
 
-    std::map<size_t, double> xsec_map = {{1000010010, 1e-5},
-                                         {1000080160, 1e-5},
-                                         {1000180400, 1e-5}};
+    std::map<size_t, double> xsec_map = {{1000010010, 1e-38},
+                                         {1000080160, 1e-38},
+                                         {1000180400, 1e-38}};
     auto event_gen = std::make_shared<TestEventGen>(xsec_map);
     sim.SetGeneratorCallback([&](double energy, size_t pdg) { return event_gen->CrossSection(energy, pdg); });
     size_t ntrials = 1 << 22;
     sim.Init(ntrials);
+
+    for(size_t i = 0; i < 10; ++i) {
+        Vector3D hit_loc;
+        NuGeom::Material hit_mat;
+        while(hit_mat == NuGeom::Material()) {
+            auto hit = sim.GetInteraction();
+            hit_loc = hit.first;
+            hit_mat = hit.second;
+        }
+    }
 
     return 0;
 
