@@ -14,6 +14,7 @@ add_library(geom SHARED
     World.cc
     Parser.cc
     Volume.cc
+    DetectorSim.cc
 )
 target_link_libraries(geom PRIVATE project_options project_warnings
                            PUBLIC geom_utils yaml::cpp pugixml::pugixml)

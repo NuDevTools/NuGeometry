@@ -3,209 +3,16 @@
 #include <ctime>
 #include "geom/Material.hh"
 #include "geom/Vector3D.hh"
-#include <numeric>
 #include <map>
 #include <string>
 #include "geom/Volume.hh"
 #include "geom/Ray.hh"
-#include "geom/LineSegment.hh"
-#include "geom/Parser.hh"
 #include "geom/Random.hh"
 #include "geom/World.hh"
+#include "geom/DetectorSim.hh"
 #include "spdlog/sinks/stdout_color_sinks.h"
 #include "spdlog/spdlog.h"
 #include "CLI/CLI.hpp"
-
-using NuGeom::LogicalVolume;
-using NuGeom::PhysicalVolume;
-using NuGeom::Vector3D;
-
-using LineSegments = std::vector<NuGeom::LineSegment>;
-using EnergyRay = std::pair<double, NuGeom::Ray>;
-using HandledRay = std::pair<std::vector<double>, LineSegments>;
-using GeneratorCallback = std::function<double(double, size_t)>;
-using RayGenCallback = std::function<EnergyRay()>;
-
-class DetectorSim {
-public:
-    DetectorSim(double safety_factor=1.5) : m_safety_factor{safety_factor} {}
-
-    void Setup(const std::string &geometry) {
-        // Create world from geometry
-        pugi::xml_document doc;
-        pugi::xml_parse_result result = doc.load_file(geometry.c_str());
-        if(!result)
-            throw std::runtime_error("GDMLParser: Invalid file");
-        NuGeom::GDMLParser parser(doc);
-        world = parser.GetWorld();
-    }
-
-    void Setup(NuGeom::World world_) { world = world_; }
-
-    void Init(size_t nrays) {
-        // Calculate the max_prob and store it with the safety factor
-        for(size_t i = 0; i < nrays; ++i) {
-            auto [energy, ray] = ray_gen_callback();
-            auto [probs, segments] = HandleRay(energy, ray);
-            auto prob_tot = std::accumulate(probs.begin(), probs.end(), 0.0);
-            if(prob_tot > max_prob) {
-                spdlog::debug("Updating max prob: {} -> {}", max_prob, prob_tot);
-                max_prob = prob_tot;
-            }
-        }
-
-        max_prob *= m_safety_factor;
-        spdlog::info("Maximum probability found with safety factor ({}): {}", m_safety_factor, max_prob);
-    }
-
-    std::vector<NuGeom::Material> GetMaterials() const { return world.GetMaterials(); }
-
-    void GetMeanFreePath(const std::vector<double> &cross_section) {
-        // Fill result mfp
-        if(cross_section.size() != m_mats.size())
-            throw "ERROR";
-
-        for(size_t i = 0; i < m_mats.size(); ++i) {
-            m_mfp[m_mats[i]] = cross_section[i];
-        }
-    }
-
-    std::pair<Vector3D, NuGeom::Material> GetInteraction() const {
-        auto [energy, ray] = ray_gen_callback();
-        auto [probs, segments] = HandleRay(energy, ray);
-        auto tot_probs = std::accumulate(probs.begin(), probs.end(), 0.0);
-        spdlog::debug("Probability / Max_Prop = {}", tot_probs / max_prob);
-        if(tot_probs / max_prob < NuGeom::Random::Instance().Uniform(0.0, 1.0)) {
-            // Return a dummy material if no interaction occurs
-            return {{}, {}};
-        }
-
-        // Determine hit location and hit material
-        double rand = NuGeom::Random::Instance().Uniform(0.0, tot_probs);
-        Vector3D position;
-        NuGeom::Material mat;
-        double sum = 0;
-        for(size_t i = 0; i < probs.size(); ++i) {
-            sum += probs[i];
-            if(sum > rand) {
-                position = segments[i].Start() + (segments[i].End() - segments[i].Start()) * (sum - rand)/probs[i];
-                mat = segments[i].GetMaterial();
-                break;
-            }
-        }
-        spdlog::debug("Interaction occured! Placing vertex at {} on {}",
-                      position, mat.Name());
-        return {position, mat};
-    }
-
-    // Expects a function that returns the total cross section per nucleus given the energy and the PDG code of the target
-    void SetGeneratorCallback(GeneratorCallback xsec) { xsec_callback = xsec; }
-    // Expects a function that returns the next ray to propagate 
-    void SetRayGenCallback(RayGenCallback ray_gen) { ray_gen_callback = ray_gen; }
-
-    //Event Generator is in control 
-    //Materials GetMaterials(Ray)
-
-    std::set<NuGeom::Material> GetMaterials(const NuGeom::Ray &rays) {
-        std::set<NuGeom::Material> mats;
-        auto segments = world.GetLineSegments(rays);
-        for(const auto &segment : segments) {
-            mats.insert(segment.GetMaterial());
-        }
-        return mats;
-    }
-
-    //gets linesegments given a ray
-    LineSegments GetLineSegments(const NuGeom::Ray &ray) {
-        return world.GetLineSegments(ray);
-    }
-
-    std::vector<double> EvaluateProbs(const LineSegments &segments, const std::map<NuGeom::Material, double> &xsecsmaps) {
-        std::vector<double> probs;
-
-        for(const auto &segment : segments) {
-            auto material = segment.GetMaterial();
-            auto cross_section = xsecsmaps.at(material);
-            auto meanfreepath = 1.0 / (cross_section * material.Density());
-            probs.push_back(segment.Length() / meanfreepath);
-
-        }
-        auto total_prob = std::accumulate(probs.begin(), probs.end(), 0.0);
-        if (total_prob > max_prob) {
-            max_prob = total_prob;
-        }
-
-        return probs;
-    }
-
-    NuGeom::Vector3D Interaction(const LineSegments &segments, const std::map<NuGeom::Material, double> &xsecsmaps) {
-
-        // Evaluate interaction probability
-        auto prob = EvaluateProbs(segments, xsecsmaps);
-
-        // Draw random uniform [0,1)
-        double r1 = NuGeom::Random::Instance().Uniform(0.0, 1.0);
-
-        // If interaction occurs
-        auto total_prob = std::accumulate(prob.begin(), prob.end(), 0.0);
-        if (total_prob/(max_prob * 1.5) < r1) {
-            // No interaction occurred
-            return NuGeom::Vector3D(9e9, 9e9, 9e9);
-        }
-        double r2 = NuGeom::Random::Instance().Uniform(0.0, 1.0);
-        // Select interaction segment
-        double cumulative_prob = 0.0;
-        size_t idx = 0;
-        for (size_t i = 0; i < prob.size(); ++i) {
-            cumulative_prob += prob[i];
-            if (cumulative_prob >= r2) {
-                idx = i;
-                break;
-            }
-        }
-        // Determine interaction location within the segment
-        double segment_length = segments[idx].Length();
-        double interaction_distance = (r2 - (cumulative_prob - prob[idx])) / prob[idx] * segment_length;
-        NuGeom::Vector3D interaction_point = segments[idx].Start() + (segments[idx].End() - segments[idx].Start()).Unit() * interaction_distance;
-        return interaction_point;
-    }
-
-private:
-    HandledRay HandleRay(double energy, const NuGeom::Ray &ray) const;
-    double CalculateMeanFreePath(double energy, const NuGeom::Material &material) const;
-
-    NuGeom::World world;
-    std::vector<std::shared_ptr<NuGeom::Shape>> shapes;
-    std::vector<NuGeom::Material> m_mats;
-    std::map<NuGeom::Material, double> m_mfp;
-    GeneratorCallback xsec_callback;
-    RayGenCallback ray_gen_callback;
-    double max_prob = 0;
-    double m_safety_factor;
-};
-
-HandledRay DetectorSim::HandleRay(double energy, const NuGeom::Ray &ray) const {
-    LineSegments segments = world.GetLineSegments(ray);
-
-    // Calculate probability to interact for each line segment
-    std::vector<double> probs;
-    for(const auto &segment : segments) {
-        auto material = segment.GetMaterial();
-        auto meanfreepath = CalculateMeanFreePath(energy, material);
-        probs.push_back(segment.Length()/meanfreepath);
-    }
-
-    return {probs, segments};
-}
-
-double DetectorSim::CalculateMeanFreePath(double energy, const NuGeom::Material &mat) const {
-    double mean_free_path = 0;
-    for(const auto &elm : mat.Elements()) {
-        spdlog::trace("Element: {}", elm.PDG());
-        mean_free_path += mat.NumberDensity(elm) * xsec_callback(energy, elm.PDG());
-    }
-    return 1.0/mean_free_path;
-}
 
 class TestRayGen {
 public:
@@ -223,7 +30,7 @@ public:
         m_zmax = zmax;
     }
 
-    EnergyRay GetRay() const {
+    NuGeom::EnergyRay GetRay() const {
         auto ray = ShootRay();
         double energy = NuGeom::Random::Instance().Uniform(m_emin, m_emax);
         return {energy, ray};
@@ -291,28 +98,28 @@ int main(int argc, char **argv){
     // Define the inner detector
     auto inner_box = std::make_shared<NuGeom::Box>(NuGeom::Vector3D{1, 1, 1}); // Define a 1x1x1 box
 
-    auto inner_vol = std::make_shared<LogicalVolume>(mat, inner_box); 
+    auto inner_vol = std::make_shared<NuGeom::LogicalVolume>(mat, inner_box); 
     NuGeom::RotationX3D rot(45*M_PI/180.0);
-    auto inner_pvol = std::make_shared<PhysicalVolume>(inner_vol, NuGeom::Transform3D{}, rot);
+    auto inner_pvol = std::make_shared<NuGeom::PhysicalVolume>(inner_vol, NuGeom::Transform3D{}, rot);
 
     // Define the outer detector
     auto outer_box = std::make_shared<NuGeom::Box>(NuGeom::Vector3D{2, 2, 2});
-    auto outer_vol = std::make_shared<LogicalVolume>(mat1, outer_box); 
+    auto outer_vol = std::make_shared<NuGeom::LogicalVolume>(mat1, outer_box); 
     outer_vol->AddDaughter(inner_pvol);
     inner_vol->SetMother(outer_vol);
     NuGeom::RotationX3D rot2(30*M_PI/180.0);
-    auto outer_pvol = std::make_shared<PhysicalVolume>(outer_vol, NuGeom::Transform3D{}, rot2);
+    auto outer_pvol = std::make_shared<NuGeom::PhysicalVolume>(outer_vol, NuGeom::Transform3D{}, rot2);
     inner_pvol->SetMother(outer_pvol);
 
     // Define the "World"
     auto world_box = std::make_shared<NuGeom::Box>(NuGeom::Vector3D{4, 4, 4});
-    auto world_vol = std::make_shared<LogicalVolume>(mat, world_box);
+    auto world_vol = std::make_shared<NuGeom::LogicalVolume>(mat, world_box);
     outer_vol->SetMother(world_vol); 
     world_vol -> AddDaughter(outer_pvol);
     NuGeom::World world(world_vol);
 
     // Setup DetectorSim
-    DetectorSim sim;
+    NuGeom::DetectorSim sim;
     sim.Setup(world);
 
     // Set callbacks and initialize the interaction placement (i.e. find max probability)
@@ -330,7 +137,7 @@ int main(int argc, char **argv){
     sim.Init(ntrials);
 
     for(size_t i = 0; i < 10; ++i) {
-        Vector3D hit_loc;
+        NuGeom::Vector3D hit_loc;
         NuGeom::Material hit_mat;
         while(hit_mat == NuGeom::Material()) {
             auto hit = sim.GetInteraction();
