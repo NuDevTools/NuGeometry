@@ -148,6 +148,40 @@ int main(int argc, char **argv){
 
     return 0;
 
+    NuGeom::DetectorSim sim;
+    sim.Setup(world);
+    
+
+   /*for (const auto &ray : rays) {
+    prob_max = 0;
+     std::vector<NuGeom::LineSegment> segments = sim.GetLineSegments(ray);
+   //GetMaterials function requires new version
+     std::set<NuGeom::Material> materials = sim.GetMaterials(segments);
+     std::map<NuGeom::Element, double> probs= sim.Evaluate(materials, energy);
+     double prob_sum = std::accumulate(probs.begin(), probs.end(), 0.0);
+     if (prob_sum > prob_max) {
+         prob_max = prob_sum;
+     }
+     return prob_max;
+
+
+   }
+
+   for (const auto &ray : rays) {
+    std::vector<NuGeom::LineSegment> segments0 = sim.GetLineSegments(ray);
+    std::set<NuGeom::Material> materials = sim.GetMaterials(segments0);
+    std::map<NuGeom::Element, double> probs= sim.Evaluate(materials, energy);
+     NuGeom::Vector3D interaction_point = sim.Interaction(segments0, probs);
+     if (interaction_point.X() < 9e9) {
+         // Valid interaction point
+
+        
+    
+
+     }
+   }
+
+
     /*
     // Calculate interaction location
     std::map<std::string,double> meanfreepaths{

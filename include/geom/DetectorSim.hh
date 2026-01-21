@@ -36,6 +36,8 @@ public:
 
     std::vector<double> EvaluateProbs(const LineSegments &segments, const std::map<NuGeom::Material, double> &xsecsmaps);
 
+    std::vector<double> Evaluate(const std::set<NuGeom::Material> &mats, double energy);
+
     NuGeom::Vector3D Interaction(const LineSegments &segments, const std::map<NuGeom::Material, double> &xsecsmaps);
 
 private:
