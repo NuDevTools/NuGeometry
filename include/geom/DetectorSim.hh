@@ -27,6 +27,7 @@ public:
     void SetGeneratorCallback(GeneratorCallback xsec) { xsec_callback = xsec; }
     // Expects a function that returns the next ray to propagate 
     void SetRayGenCallback(RayGenCallback ray_gen) { ray_gen_callback = ray_gen; }
+    void SetMaxProb(double prob) { max_prob = prob * m_safety_factor; }
 
     std::set<NuGeom::Material> GetMaterials(const LineSegments &segments) const;
     // Gets linesegments given a ray
