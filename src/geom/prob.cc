@@ -65,6 +65,19 @@ public:
         return m_xsec.at(pdg);
     }
 
+    std::map<NuGeom::Material, double> EvaluateCrossSections(double energy, const std::set<NuGeom::Material> &mats) const {
+        std::map<NuGeom::Material,double> result;
+        for (const auto &mat : mats) {
+            for (size_t i = 0; i < mat.NElements(); ++i) {
+                auto elem = mat.Elements()[i];
+                size_t pdg = 1000000000 + elem.Z() * 10000 + elem.A() * 10;
+                double xsec = CrossSection(energy, pdg);
+                result[mat] += xsec;
+            }
+        }
+        return result;
+    }
+
 private:
     std::map<size_t, double> m_xsec;
 };
@@ -148,38 +161,57 @@ int main(int argc, char **argv){
 
     return 0;
 
-    NuGeom::DetectorSim sim;
+    // Alternative 
+    double energy = 1.0; // GeV //Remove Later
     sim.Setup(world);
+    //sim.SetMaxProb(1e-3);
+    double max_prob = 1e-3;
+    TestEventGen gen1(xsec_map);
+
+    //Remove Later
+    std::vector<NuGeom::Ray> rays;
+    size_t ntest_rays = 1 << 20;
+    for (size_t i = 0; i < ntest_rays; ++i) {
+        rays.push_back(raygen->GetRay().second);
+    }
+   for (const auto &ray : rays) {
     
-
-   /*for (const auto &ray : rays) {
-    prob_max = 0;
-     std::vector<NuGeom::LineSegment> segments = sim.GetLineSegments(ray);
-   //GetMaterials function requires new version
+    std::vector<NuGeom::LineSegment> segments = sim.GetLineSegments(ray);
      std::set<NuGeom::Material> materials = sim.GetMaterials(segments);
-     std::map<NuGeom::Element, double> probs= sim.Evaluate(materials, energy);
+     std::map<NuGeom::Material, double> xsecs= gen1.EvaluateCrossSections(energy, materials);
+     std::vector<double> probs = sim.EvaluateProbs(segments, xsecs);
      double prob_sum = std::accumulate(probs.begin(), probs.end(), 0.0);
-     if (prob_sum > prob_max) {
-         prob_max = prob_sum;
+     if (prob_sum > max_prob) {
+         max_prob = prob_sum;
      }
-     return prob_max;
-
-
+     return max_prob;
    }
 
+    std::ofstream hist;
+    hist.open("hit_locations2.txt", std::ios::app);
+    if (!hist.is_open()) {
+    throw std::runtime_error("Failed to open hit_locations2.txt");
+}
    for (const auto &ray : rays) {
     std::vector<NuGeom::LineSegment> segments0 = sim.GetLineSegments(ray);
     std::set<NuGeom::Material> materials = sim.GetMaterials(segments0);
-    std::map<NuGeom::Element, double> probs= sim.Evaluate(materials, energy);
-     NuGeom::Vector3D interaction_point = sim.Interaction(segments0, probs);
+    std::map<NuGeom::Material, double> material_xsec_map = gen1.EvaluateCrossSections(energy, materials);
+    NuGeom::Vector3D interaction_point = sim.Interaction(segments0, material_xsec_map);
      if (interaction_point.X() < 9e9) {
          // Valid interaction point
-
-        
-    
-
+         hist << interaction_point.X() << " "
+              << interaction_point.Y() << " "
+              << interaction_point.Z() << "\n";
+    }
+        else {
+            // No interaction occurred
+            spdlog::info("No interaction occurred for this ray.");
      }
+     
    }
+   hist.close();
+   
+}
 
 
     /*
@@ -297,4 +329,4 @@ int main(int argc, char **argv){
 
     return 0;
     */
-}
+
