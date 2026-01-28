@@ -28,7 +28,7 @@ class Camera {
         }
 
         NuGeom::Ray MakeRay(size_t px, size_t py) const {
-            return NuGeom::Ray(m_pos, RayDirection(px, py));
+            return NuGeom::Ray(m_pos, RayDirection(px, py), 1);
         }
 
         void MoveForward(double distance) {

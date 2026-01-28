@@ -76,11 +76,11 @@ bool LogicalVolume::RayTrace(const Ray &ray, double &time, std::shared_ptr<Physi
 void LogicalVolume::GetLineSegments(const Ray &ray, std::vector<LineSegment> &segments) const {
     static constexpr double eps = 1e-8;
     double time = 0;
-    auto shift_ray = Ray(ray.Propagate(eps), ray.Direction());
+    auto shift_ray = Ray(ray.Propagate(eps), ray.Direction(), ray.POT());
     std::shared_ptr<PhysicalVolume> pvol = nullptr;
     if(!RayTrace(shift_ray, time, pvol)) {
         auto tmp_origin = ray.Propagate(eps);
-        auto tmp_ray = Ray(tmp_origin, ray.Direction());
+        auto tmp_ray = Ray(tmp_origin, ray.Direction(), ray.POT());
         time = m_shape -> Intersect(tmp_ray) + eps;
     }
     time += eps;
@@ -88,7 +88,7 @@ void LogicalVolume::GetLineSegments(const Ray &ray, std::vector<LineSegment> &se
 
     if(!pvol) return;
     auto origin = ray.Propagate(time);
-    auto new_ray = Ray(origin, ray.Direction());
+    auto new_ray = Ray(origin, ray.Direction(), ray.POT());
     pvol -> GetLineSegments(new_ray, segments, {});
 }
 
@@ -102,12 +102,12 @@ void PhysicalVolume::GetLineSegments(const Ray &in_ray, std::vector<LineSegment>
     static constexpr double eps = 1e-8;
     auto local_ray = Transform3D::ApplyRay(in_ray, from_global);
     auto ray = TransformRay(local_ray);
-    auto shift_ray = Ray(ray.Propagate(eps), ray.Direction());
+    auto shift_ray = Ray(ray.Propagate(eps), ray.Direction(), ray.POT());
     double time = 0;
     std::shared_ptr<PhysicalVolume> pvol = nullptr;
     if(!RayTrace(shift_ray, time, pvol)) {
         auto tmp_origin = ray.Propagate(eps);
-        auto tmp_ray = Ray(tmp_origin, ray.Direction());
+        auto tmp_ray = Ray(tmp_origin, ray.Direction(), ray.POT());
         time = m_volume -> GetShape() -> Intersect(tmp_ray);
 
         if(m_mother) {
@@ -117,7 +117,7 @@ void PhysicalVolume::GetLineSegments(const Ray &in_ray, std::vector<LineSegment>
     time += eps;
     auto origin = in_ray.Propagate(time);
     segments.emplace_back(in_ray.Origin(), origin, m_volume -> GetMaterial());
-    auto new_ray = Ray(origin, in_ray.Direction());
+    auto new_ray = Ray(origin, in_ray.Direction(), ray.POT());
 
     if(!pvol) {
         if(m_volume -> Mother()) {

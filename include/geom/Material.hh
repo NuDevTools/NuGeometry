@@ -53,6 +53,9 @@ public:
         // Probably should add some additional validation
         return m_name == other.m_name; 
     }
+    bool operator!=(const Material &other) const {
+        return !(*this == other);
+    }
 
 private:
     void ComputeNumberDensities();

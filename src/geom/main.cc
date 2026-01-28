@@ -57,7 +57,7 @@ void PixelColor(const NuGeom::World &world, const NuGeom::Camera &camera, size_t
         double shadow = 0.0;
         Vector3D shadowRayOrigin = ray.Propagate(distance) + norm * 0.01;
         Vector3D shadowRayDirection = Light;
-        NuGeom::Ray ray2(shadowRayOrigin, shadowRayDirection);
+        NuGeom::Ray ray2(shadowRayOrigin, shadowRayDirection, 1E18);
         double distance2;
         size_t step2;
         size_t idx2;

@@ -5,6 +5,8 @@
 #include "geom/Volume.hh"
 #include "geom/World.hh"
 
+#include <fstream>
+
 namespace NuGeom {
 
 using LineSegments = std::vector<NuGeom::LineSegment>;
@@ -16,12 +18,17 @@ using RayGenCallback = std::function<EnergyRay()>;
 class DetectorSim {
 public:
     DetectorSim(double safety_factor=1.5) : m_safety_factor{safety_factor} {}
+    
+    void SetEventFile(const std::string &outfile) { 
+        m_outfile = std::ofstream(outfile);
+    }
 
     void Setup(const std::string &geometry);
     void Setup(NuGeom::World world_) { world = world_; }
     void Init(size_t nrays);
     std::vector<NuGeom::Material> GetMaterials() const { return world.GetMaterials(); }
-    std::pair<Vector3D, NuGeom::Material> GetInteraction() const;
+    void GenerateEvents(size_t nevents) const;
+    void GenerateEvents(double POT) const;
 
     // Expects a function that returns the total cross section per nucleus given the energy and the PDG code of the target
     void SetGeneratorCallback(GeneratorCallback xsec) { xsec_callback = xsec; }
@@ -43,6 +50,7 @@ public:
 private:
     HandledRay HandleRay(double energy, const NuGeom::Ray &ray) const;
     double CalculateMeanFreePath(double energy, const NuGeom::Material &material) const;
+    std::pair<Vector3D, NuGeom::Material> GetInteraction() const;
 
     NuGeom::World world;
     std::vector<std::shared_ptr<NuGeom::Shape>> shapes;
@@ -52,6 +60,9 @@ private:
     RayGenCallback ray_gen_callback;
     double max_prob = 0;
     double m_safety_factor;
+
+    mutable double m_pot = 0; // This is a code smell. Figure out how to handle better
+    mutable std::ofstream m_outfile;
 };
 
 }
