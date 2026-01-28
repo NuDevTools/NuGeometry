@@ -90,24 +90,6 @@ std::vector<double> DetectorSim::EvaluateProbs(const LineSegments &segments, con
     return probs;
 }
 
-<<<<<<< HEAD
-
-=======
-void DetectorSim::GenerateEvents(size_t nevents) const {
-    for(size_t i = 0; i < nevents; ++i) {
-        NuGeom::Vector3D hit_loc;
-        NuGeom::Material hit_mat;
-        while(hit_mat == NuGeom::Material()) {
-            auto hit = GetInteraction();
-            hit_loc = hit.first;
-            hit_mat = hit.second;
-        }
-        if(m_outfile) {
-            m_outfile << hit_loc << ", " << hit_mat.Name() << "\n";
-        }
-    }
-}
->>>>>>> refs/remotes/origin/main
 
 void DetectorSim::GenerateEvents(double pot) const {
     size_t nhits = 0;
