@@ -48,7 +48,7 @@ private:
         double phi = rand.Uniform(0.0, 2*M_PI);
         NuGeom::Vector3D direction{sintheta*cos(phi), sintheta*sin(phi), costheta};
 
-        return NuGeom::Ray(position, direction);
+        return NuGeom::Ray(position, direction, 1e2);
     }
 
     double m_emin, m_emax;

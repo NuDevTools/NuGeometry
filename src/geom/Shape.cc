@@ -21,7 +21,7 @@ NuGeom::Vector3D NuGeom::Shape::TransformPoint(const Vector3D &point) const {
 NuGeom::Ray NuGeom::Shape::TransformRay(const Ray &in_ray) const {
     auto origin = m_rotation.Apply(m_translation.Apply(in_ray.Origin())); 
     auto direction = m_rotation.Apply(in_ray.Direction());
-    return {origin, direction};
+    return {origin, direction, in_ray.POT()};
 }
 
 

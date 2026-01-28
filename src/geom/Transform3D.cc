@@ -116,7 +116,7 @@ NuGeom::Ray Transform3D::ApplyRay(const Ray &ray, const Translation3D &trans, co
     auto origin = rot.Apply(trans.Apply(ray.Origin()));
     auto direction = rot.Apply(ray.Direction());
 
-    return {origin, direction};
+    return {origin, direction, ray.POT()};
 }
 
 Rotation3D::Rotation3D(const Vector3D &vec, double angle) : Transform3D() {

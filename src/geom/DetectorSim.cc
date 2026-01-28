@@ -38,6 +38,7 @@ std::pair<NuGeom::Vector3D, NuGeom::Material> DetectorSim::GetInteraction() cons
     auto [energy, ray] = ray_gen_callback();
     auto [probs, segments] = HandleRay(energy, ray);
     auto tot_probs = std::accumulate(probs.begin(), probs.end(), 0.0);
+    m_pot += ray.POT() / max_prob;
     spdlog::debug("Probability / Max_Prop = {}", tot_probs / max_prob);
     if(tot_probs / max_prob < NuGeom::Random::Instance().Uniform(0.0, 1.0)) {
         // Return a dummy material if no interaction occurs
