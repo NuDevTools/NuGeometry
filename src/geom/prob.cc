@@ -76,7 +76,13 @@ int main(int argc, char **argv){
     CLI::App app("Neutrino Geometry Driver");
     argv = app.ensure_utf8(argv);
     int verbosity = 0;
+    std::string outfile = "hits.out";
+    size_t nevents = 1000;
+    double pot = 1e23;
     app.add_flag("-v,--verbose", verbosity, "Increase the verbosity level");
+    app.add_option("-f,--file", outfile, "File to write out the locations of the hits.");
+    app.add_option("-e,--events", nevents, "Number of events to generate. (Default 1000)");
+    app.add_option("-p,--pot", pot, "Number of protons on target (POT). (Default 10^23)");
 
     try {
         app.parse(argc, argv);
@@ -121,6 +127,7 @@ int main(int argc, char **argv){
     // Setup DetectorSim
     NuGeom::DetectorSim sim;
     sim.Setup(world);
+    sim.SetEventFile(outfile);
 
     // Set callbacks and initialize the interaction placement (i.e. find max probability)
     auto raygen = std::make_shared<TestRayGen>(0, 10, NuGeom::Vector3D{-2, -2, -2},
@@ -135,22 +142,10 @@ int main(int argc, char **argv){
     sim.SetGeneratorCallback([&](double energy, size_t pdg) { return event_gen->CrossSection(energy, pdg); });
     size_t ntrials = 1 << 22;
     sim.Init(ntrials);
-
-    for(size_t i = 0; i < 10; ++i) {
-        NuGeom::Vector3D hit_loc;
-        NuGeom::Material hit_mat;
-        while(hit_mat == NuGeom::Material()) {
-            auto hit = sim.GetInteraction();
-            hit_loc = hit.first;
-            hit_mat = hit.second;
-        }
-    }
+    // sim.GenerateEvents(nevents);
+    sim.GenerateEvents(pot);
 
     return 0;
-
-    NuGeom::DetectorSim sim;
-    sim.Setup(world);
-    
 
    /*for (const auto &ray : rays) {
     prob_max = 0;
@@ -182,7 +177,6 @@ int main(int argc, char **argv){
    }
 
 
-    /*
     // Calculate interaction location
     std::map<std::string,double> meanfreepaths{
         {"Water",1e+7},

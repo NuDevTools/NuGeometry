@@ -89,19 +89,51 @@ std::vector<double> DetectorSim::EvaluateProbs(const LineSegments &segments, con
     return probs;
 }
 
-   std::vector<double> Evaluate(const std::set<NuGeom::Material> &mats, double energy) {
-       std::vector<double> probs;
-       for(const auto &mat : mats) {
-           double inverse_mfp = 0;
-           for(const auto &element : mat.Elements()) {
-               inverse_mfp += xsec_callback(energy, element.PDG()) * mat.NumberDensity(element);
-           }
-           probs.push_back(1.0 / inverse_mfp);
-       }
-       return probs;
-   }
+void DetectorSim::GenerateEvents(size_t nevents) const {
+    for(size_t i = 0; i < nevents; ++i) {
+        NuGeom::Vector3D hit_loc;
+        NuGeom::Material hit_mat;
+        while(hit_mat == NuGeom::Material()) {
+            auto hit = GetInteraction();
+            hit_loc = hit.first;
+            hit_mat = hit.second;
+        }
+        if(m_outfile) {
+            m_outfile << hit_loc << ", " << hit_mat.Name() << "\n";
+        }
+    }
+}
 
+void DetectorSim::GenerateEvents(double pot) const {
+    size_t nhits = 0;
+    while(m_pot < pot) {
+        NuGeom::Vector3D hit_loc;
+        NuGeom::Material hit_mat;
+        auto hit = GetInteraction();
+        hit_loc = hit.first;
+        hit_mat = hit.second;
+        if(hit_mat != NuGeom::Material()) {
+            nhits++;
+            if(m_outfile) {
+                m_outfile << hit_loc << ", " << hit_mat.Name() << "\n";
+            }
+        }
+    }
+    spdlog::info("Accumulated {} events with {} POT",
+                 nhits, m_pot);
+}
 
+// std::vector<double> Evaluate(const std::set<NuGeom::Material> &mats, double energy) {
+//     std::vector<double> probs;
+//     for(const auto &mat : mats) {
+//         double inverse_mfp = 0;
+//         for(const auto &element : mat.Elements()) {
+//             inverse_mfp += xsec_callback(energy, element.PDG()) * mat.NumberDensity(element);
+//         }
+//         probs.push_back(1.0 / inverse_mfp);
+//     }
+//     return probs;
+// }
 
 NuGeom::Vector3D DetectorSim::Interaction(const LineSegments &segments, const std::map<NuGeom::Material, double> &xsecsmaps) {
     // Evaluate interaction probability
