@@ -59,7 +59,12 @@ class TestEventGen {
   public:
     TestEventGen(std::map<size_t, double> xsec) : m_xsec{xsec} {}
 
-    double CrossSection(double, size_t pdg) const { return m_xsec.at(pdg); }
+    double CrossSection(double energy, size_t pdg) const {
+        double sigma0 = m_xsec.at(pdg);
+        double x0 = std::log10(0.04);
+        double sigmax = 1;
+        return energy * sigma0 * std::exp(-pow((std::log10(energy) - x0) / sigmax, 2));
+    }
 
     std::map<NuGeom::Element, double>
     EvaluateCrossSections(double energy, const std::set<NuGeom::Material> &mats) const {
