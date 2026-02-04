@@ -1,6 +1,6 @@
 #include "geom/Volume.hh"
-#include "geom/Ray.hh"
 #include "geom/LineSegment.hh"
+#include "geom/Ray.hh"
 #include "spdlog/spdlog.h"
 
 #include <limits>
@@ -11,38 +11,31 @@ using NuGeom::PhysicalVolume;
 
 void LogicalVolume::GetMaterials(std::set<Material> &mats) const {
     mats.insert(m_material);
-    for(const auto &daughter : m_daughters) {
-        daughter->GetLogicalVolume()->GetMaterials(mats);
-    }
+    for(const auto &daughter : m_daughters) { daughter->GetLogicalVolume()->GetMaterials(mats); }
 }
 
 double LogicalVolume::Mass() const {
-    return Volume() * m_material.Density()
-        + DaughterMass();
+    return Volume() * m_material.Density() + DaughterMass();
 }
 
 double AddVolume(double a, const std::shared_ptr<PhysicalVolume> &b) {
-    return a + b -> GetLogicalVolume() -> Volume();
+    return a + b->GetLogicalVolume()->Volume();
 }
 
 double LogicalVolume::DaughterVolumes() const {
-    return std::accumulate(m_daughters.begin(),
-                           m_daughters.end(),
-                           0.0, AddVolume);
+    return std::accumulate(m_daughters.begin(), m_daughters.end(), 0.0, AddVolume);
 }
 
 double LogicalVolume::Volume() const {
-    return m_shape -> Volume() - DaughterVolumes();
+    return m_shape->Volume() - DaughterVolumes();
 }
 
 double AddMass(double a, const std::shared_ptr<PhysicalVolume> &b) {
-    return a + b -> GetLogicalVolume() -> Mass();
+    return a + b->GetLogicalVolume()->Mass();
 }
 
 double LogicalVolume::DaughterMass() const {
-    return std::accumulate(m_daughters.begin(),
-                           m_daughters.end(),
-                           0.0, AddMass);
+    return std::accumulate(m_daughters.begin(), m_daughters.end(), 0.0, AddMass);
 }
 
 bool LogicalVolume::SphereTrace(const Ray &ray, double &time, size_t &step, size_t &idx) const {
@@ -61,10 +54,11 @@ bool LogicalVolume::SphereTrace(const Ray &ray, double &time, size_t &step, size
     return true;
 }
 
-bool LogicalVolume::RayTrace(const Ray &ray, double &time, std::shared_ptr<PhysicalVolume> &vol) const {
+bool LogicalVolume::RayTrace(const Ray &ray, double &time,
+                             std::shared_ptr<PhysicalVolume> &vol) const {
     time = std::numeric_limits<double>::infinity();
     for(const auto &daughter : Daughters()) {
-        double ctime = daughter -> Intersect(ray);
+        double ctime = daughter->Intersect(ray);
         if(ctime < time) {
             time = ctime;
             vol = daughter;
@@ -81,7 +75,7 @@ void LogicalVolume::GetLineSegments(const Ray &ray, std::vector<LineSegment> &se
     if(!RayTrace(shift_ray, time, pvol)) {
         auto tmp_origin = ray.Propagate(eps);
         auto tmp_ray = Ray(tmp_origin, ray.Direction(), ray.POT());
-        time = m_shape -> Intersect(tmp_ray) + eps;
+        time = m_shape->Intersect(tmp_ray) + eps;
     }
     time += eps;
     segments.emplace_back(ray.Origin(), ray.Propagate(time), m_material);
@@ -89,12 +83,12 @@ void LogicalVolume::GetLineSegments(const Ray &ray, std::vector<LineSegment> &se
     if(!pvol) return;
     auto origin = ray.Propagate(time);
     auto new_ray = Ray(origin, ray.Direction(), ray.POT());
-    pvol -> GetLineSegments(new_ray, segments, {});
+    pvol->GetLineSegments(new_ray, segments, {});
 }
 
 double PhysicalVolume::Intersect(const Ray &in_ray) const {
     auto ray = TransformRay(in_ray);
-    return m_volume -> GetShape() -> Intersect(ray);
+    return m_volume->GetShape()->Intersect(ray);
 }
 
 void PhysicalVolume::GetLineSegments(const Ray &in_ray, std::vector<LineSegment> &segments,
@@ -108,40 +102,37 @@ void PhysicalVolume::GetLineSegments(const Ray &in_ray, std::vector<LineSegment>
     if(!RayTrace(shift_ray, time, pvol)) {
         auto tmp_origin = ray.Propagate(eps);
         auto tmp_ray = Ray(tmp_origin, ray.Direction(), ray.POT());
-        time = m_volume -> GetShape() -> Intersect(tmp_ray);
+        time = m_volume->GetShape()->Intersect(tmp_ray);
 
-        if(m_mother) {
-            pvol = m_mother;
-        }
+        if(m_mother) { pvol = m_mother; }
     }
     time += eps;
     auto origin = in_ray.Propagate(time);
-    segments.emplace_back(in_ray.Origin(), origin, m_volume -> GetMaterial());
+    segments.emplace_back(in_ray.Origin(), origin, m_volume->GetMaterial());
     auto new_ray = Ray(origin, in_ray.Direction(), ray.POT());
 
     if(!pvol) {
-        if(m_volume -> Mother()) {
-            m_volume -> Mother() -> GetLineSegments(new_ray, segments); 
-        }
+        if(m_volume->Mother()) { m_volume->Mother()->GetLineSegments(new_ray, segments); }
         return;
     }
     Transform3D transform = m_transform;
-    if(pvol == m_mother) {
-        transform = pvol -> GetTransform().Inverse();
-    }
-    auto newtransform = from_global*transform;
-    pvol -> GetLineSegments(new_ray, segments, newtransform);
+    if(pvol == m_mother) { transform = pvol->GetTransform().Inverse(); }
+    auto newtransform = from_global * transform;
+    pvol->GetLineSegments(new_ray, segments, newtransform);
 }
 
 NuGeom::Ray PhysicalVolume::TransformRay(const Ray &ray) const {
-    if(is_identity) return ray;
-    else if(is_translation) return Transform3D::TranslateRay(ray, m_trans);
+    if(is_identity)
+        return ray;
+    else if(is_translation)
+        return Transform3D::TranslateRay(ray, m_trans);
     return Transform3D::ApplyRay(ray, m_trans, m_rot);
 }
 
 NuGeom::Ray PhysicalVolume::TransformRayInverse(const Ray &ray) const {
-    if(is_identity) return ray;
-    else if(is_translation) return Transform3D::TranslateRay(ray, m_trans);
+    if(is_identity)
+        return ray;
+    else if(is_translation)
+        return Transform3D::TranslateRay(ray, m_trans);
     return Transform3D::ApplyRay(ray, m_transform.Inverse());
 }
-

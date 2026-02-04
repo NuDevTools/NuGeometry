@@ -3,6 +3,4 @@
 #include <SFML/Window/Event.hpp>
 #include <SFML/Window/Keyboard.hpp>
 
-namespace geom::namespace interactive {
-
-}
+namespace geom::namespace interactive {}

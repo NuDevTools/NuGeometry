@@ -4,3 +4,5 @@ build/
 include/geom/System.hh
 *egg-info
 *.so
+*.ipynb*
+.vscode

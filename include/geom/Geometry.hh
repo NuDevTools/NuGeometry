@@ -3,9 +3,9 @@
 namespace NuGeom {
 
 class BaseGeometry {
-    public:
-        BaseGeometry() = default;
-        virtual ~BaseGeometry() = default;
+  public:
+    BaseGeometry() = default;
+    virtual ~BaseGeometry() = default;
 };
 
-}
+} // namespace NuGeom

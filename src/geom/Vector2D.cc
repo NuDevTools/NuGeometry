@@ -3,12 +3,12 @@
 using NuGeom::Vector2D;
 
 double Vector2D::Dot(const Vector2D &other) const {
-    return m_vec[0]*other.m_vec[0] + m_vec[1]*other.m_vec[1];
+    return m_vec[0] * other.m_vec[0] + m_vec[1] * other.m_vec[1];
 }
 
 Vector2D Vector2D::Unit() const {
     double norm = Norm();
-    return {m_vec[0]/norm, m_vec[1]/norm};
+    return {m_vec[0] / norm, m_vec[1] / norm};
 }
 
 Vector2D Vector2D::Max(const Vector2D &other) const {

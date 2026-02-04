@@ -61,6 +61,6 @@ class Random {
     std::shared_ptr<randutils::mt19937_rng> m_rng;
 };
 
-} // namespace achilles
+} // namespace NuGeom
 
 #endif

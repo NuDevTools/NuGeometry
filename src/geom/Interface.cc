@@ -1,15 +1,15 @@
 #include "geom/Interface.hh"
 
 class CrossSectionTest {
-    public:
-        double Evaluate(size_t Z, size_t A, double) const {
-            return static_cast<double>(Z*A)*1e-38;
-        }
+  public:
+    double Evaluate(size_t Z, size_t A, double) const { return static_cast<double>(Z * A) * 1e-38; }
 };
 
 class FluxTest {
-    public:
-        std::pair<NuGeom::Vector3D, NuGeom::Vector3D> GetFlux(const std::vector<double>&) { return {{0, 0, -200}, {0, 0, 1}}; }
+  public:
+    std::pair<NuGeom::Vector3D, NuGeom::Vector3D> GetFlux(const std::vector<double> &) {
+        return {{0, 0, -200}, {0, 0, 1}};
+    }
 };
 
 int main(int argc, char *argv[]) {

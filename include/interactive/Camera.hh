@@ -2,7 +2,6 @@
 
 #include "geom/Camera.hh"
 
-
 namespace NuGeom::Interactive {
 
 enum class Direction {
@@ -15,12 +14,12 @@ enum class Direction {
 };
 
 class MoveableCamera {
-    public:
-        MoveableCamera(const NuGeom::Camera&);
-        MoveableCamera operator+=(const NuGeom::Vector3D&);
+  public:
+    MoveableCamera(const NuGeom::Camera &);
+    MoveableCamera operator+=(const NuGeom::Vector3D &);
 
-        void rotate(double, double);
-        void move(Direction);
+    void rotate(double, double);
+    void move(Direction);
 };
 
-}
+} // namespace NuGeom::Interactive

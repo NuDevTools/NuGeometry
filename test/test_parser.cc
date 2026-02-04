@@ -1,7 +1,7 @@
-#include <iostream>
 #include "catch2/catch.hpp"
-#include "geom/Parser.hh"
 #include "geom/Logging.hh"
+#include "geom/Parser.hh"
+#include <iostream>
 
 TEST_CASE("Parse define block", "[GDMLParser]") {
     // TODO: Figure out why default logger segfualts
@@ -94,8 +94,7 @@ TEST_CASE("Parse define block", "[GDMLParser]") {
 
     pugi::xml_document doc;
     auto result = doc.load_string(input.c_str());
-    if(!result)
-        throw std::runtime_error("GDMLParser: Invalid file");
+    if(!result) throw std::runtime_error("GDMLParser: Invalid file");
     NuGeom::GDMLParser parser(doc);
 
     SECTION("Properly parses constant definitions") {

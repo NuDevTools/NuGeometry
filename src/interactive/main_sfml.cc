@@ -22,8 +22,7 @@ int main() {
     // TODO: Add to event loop to load
     pugi::xml_document doc;
     pugi::xml_parse_result result = doc.load_file("SimpleBoxes.geom.manual.gdml");
-    if(!result)
-        throw std::runtime_error("GDMLParser: Invalid file");
+    if(!result) throw std::runtime_error("GDMLParser: Invalid file");
 
     NuGeom::GDMLParser parse(doc);
     NuGeom::World world = parse.GetWorld();
@@ -32,13 +31,14 @@ int main() {
     NuGeom::Interactive::Renderer renderer;
     renderer.OnResize(NuGeom::Camera::Width(), NuGeom::Camera::Height());
 
-    auto render_start = std::chrono::high_resolution_clock::now(); 
+    auto render_start = std::chrono::high_resolution_clock::now();
     renderer.Render(world, camera);
-    auto render_end = std::chrono::high_resolution_clock::now(); 
+    auto render_end = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> render_elapsed = render_end - render_start;
     std::cout << "Total Time for render = " << render_elapsed.count() << "\n";
 
-    sf::RenderWindow window(sf::VideoMode(NuGeom::Camera::Width(), NuGeom::Camera::Height()), "SFML works!");
+    sf::RenderWindow window(sf::VideoMode(NuGeom::Camera::Width(), NuGeom::Camera::Height()),
+                            "SFML works!");
     window.setVerticalSyncEnabled(true);
     window.setActive(true);
     window.setFramerateLimit(60);
@@ -103,9 +103,7 @@ int main() {
                 }
             }
 
-            if(event.type == sf::Event::Closed) {
-                window.close();
-            }
+            if(event.type == sf::Event::Closed) { window.close(); }
         }
 
         ImGui::SFML::Update(window, deltaClock.restart());
@@ -117,8 +115,7 @@ int main() {
             std::cout << "Loading: " << filename << std::endl;
             pugi::xml_document doc;
             pugi::xml_parse_result result = doc.load_file(filename.c_str());
-            if(!result)
-                throw std::runtime_error("GDMLParser: Invalid file");
+            if(!result) throw std::runtime_error("GDMLParser: Invalid file");
 
             NuGeom::GDMLParser parse(doc);
             world = parse.GetWorld();
@@ -128,9 +125,9 @@ int main() {
         if(needs_render || ImGui::Button("Render")) {
             camera.PreComputeRays();
             needs_render = false;
-            render_start = std::chrono::high_resolution_clock::now(); 
+            render_start = std::chrono::high_resolution_clock::now();
             renderer.Render(world, camera);
-            render_end = std::chrono::high_resolution_clock::now(); 
+            render_end = std::chrono::high_resolution_clock::now();
         }
         std::chrono::duration<double, std::milli> render_elapsed = render_end - render_start;
         ImGui::Text("Render Time: %6f", render_elapsed.count());

@@ -1,15 +1,15 @@
 #include "geom/PythonInterface.hh"
+#include "geom/Camera.hh"
+#include "geom/Element.hh"
 #include "geom/LineSegment.hh"
+#include "geom/Material.hh"
 #include "geom/Parser.hh"
 #include "geom/Ray.hh"
+#include "geom/Shape.hh"
+#include "geom/Transform3D.hh"
 #include "geom/Vector2D.hh"
 #include "geom/Vector3D.hh"
 #include "geom/Vector4D.hh"
-#include "geom/Transform3D.hh"
-#include "geom/Shape.hh"
-#include "geom/Element.hh"
-#include "geom/Material.hh"
-#include "geom/Camera.hh"
 
 PYBIND11_MODULE(nugeom, m) {
     // XML Parser module
@@ -38,14 +38,12 @@ PYBIND11_MODULE(nugeom, m) {
 
 void ParserModule(py::module &m) {
     py::class_<NuGeom::GDMLParser>(m, "Parser")
-        .def(py::init(
-             [](const std::string &filename) {
-                pugi::xml_document doc;
-                auto result = doc.load_file(filename.c_str());
-                if(!result)
-                    throw std::runtime_error("GDMLParser: Invalid file");
-                return NuGeom::GDMLParser(doc);
-             }))
+        .def(py::init([](const std::string &filename) {
+            pugi::xml_document doc;
+            auto result = doc.load_file(filename.c_str());
+            if(!result) throw std::runtime_error("GDMLParser: Invalid file");
+            return NuGeom::GDMLParser(doc);
+        }))
         .def("get_world", &NuGeom::GDMLParser::GetWorld);
 }
 
@@ -54,9 +52,9 @@ void VectorModule(py::module &m) {
         .def(py::init<>())
         .def(py::init<double, double>())
         .def(py::init<std::array<double, 2>>())
-        .def(py::init<const NuGeom::Vector2D&>())
-        .def("x", [](NuGeom::Vector2D& self, double x) { self.X() = x; })
-        .def("y", [](NuGeom::Vector2D& self, double y) { self.Y() = y; })
+        .def(py::init<const NuGeom::Vector2D &>())
+        .def("x", [](NuGeom::Vector2D &self, double x) { self.X() = x; })
+        .def("y", [](NuGeom::Vector2D &self, double y) { self.Y() = y; })
         .def("dot", &NuGeom::Vector2D::Dot)
         .def("norm2", &NuGeom::Vector2D::Norm2)
         .def("norm", &NuGeom::Vector2D::Norm)
@@ -81,13 +79,13 @@ void VectorModule(py::module &m) {
         .def(py::init<>())
         .def(py::init<double, double, double>())
         .def(py::init<std::array<double, 3>>())
-        .def(py::init<const NuGeom::Vector3D&>())
-        .def("x", [](NuGeom::Vector3D& self, double x) { self.X() = x; })
-        .def("y", [](NuGeom::Vector3D& self, double y) { self.Y() = y; })
-        .def("z", [](NuGeom::Vector3D& self, double z) { self.Z() = z; })
-        .def("r", [](NuGeom::Vector3D& self, double r) { self.R() = r; })
-        .def("b", [](NuGeom::Vector3D& self, double g) { self.G() = g; })
-        .def("g", [](NuGeom::Vector3D& self, double b) { self.B() = b; })
+        .def(py::init<const NuGeom::Vector3D &>())
+        .def("x", [](NuGeom::Vector3D &self, double x) { self.X() = x; })
+        .def("y", [](NuGeom::Vector3D &self, double y) { self.Y() = y; })
+        .def("z", [](NuGeom::Vector3D &self, double z) { self.Z() = z; })
+        .def("r", [](NuGeom::Vector3D &self, double r) { self.R() = r; })
+        .def("b", [](NuGeom::Vector3D &self, double g) { self.G() = g; })
+        .def("g", [](NuGeom::Vector3D &self, double b) { self.B() = b; })
         .def("dot", &NuGeom::Vector3D::Dot)
         .def("cross", &NuGeom::Vector3D::Cross)
         .def("norm2", &NuGeom::Vector3D::Norm2)
@@ -113,11 +111,10 @@ void VectorModule(py::module &m) {
 void TransformModule(py::module &m) {
     py::class_<NuGeom::Transform3D>(m, "Transform")
         .def(py::init<>())
-        .def(py::init<const std::array<double, 12>&>())
-        .def(py::init<double, double, double, double,
-                      double, double, double, double,
-                      double, double, double, double>())
-        .def(py::init<const NuGeom::Rotation3D&, const NuGeom::Translation3D&>())
+        .def(py::init<const std::array<double, 12> &>())
+        .def(py::init<double, double, double, double, double, double, double, double, double,
+                      double, double, double>())
+        .def(py::init<const NuGeom::Rotation3D &, const NuGeom::Translation3D &>())
         .def("apply", &NuGeom::Transform3D::Apply)
         .def("inverse", &NuGeom::Transform3D::Inverse)
         .def(py::self * py::self)
@@ -125,30 +122,24 @@ void TransformModule(py::module &m) {
 
     py::class_<NuGeom::Rotation3D>(m, "Rotation")
         .def(py::init<>())
-        .def(py::init<const NuGeom::Vector3D&, double>());
+        .def(py::init<const NuGeom::Vector3D &, double>());
 
-    py::class_<NuGeom::RotationX3D>(m, "RotationX")
-        .def(py::init<double>());
+    py::class_<NuGeom::RotationX3D>(m, "RotationX").def(py::init<double>());
 
-    py::class_<NuGeom::RotationY3D>(m, "RotationY")
-        .def(py::init<double>());
+    py::class_<NuGeom::RotationY3D>(m, "RotationY").def(py::init<double>());
 
-    py::class_<NuGeom::RotationZ3D>(m, "RotationZ")
-        .def(py::init<double>());
+    py::class_<NuGeom::RotationZ3D>(m, "RotationZ").def(py::init<double>());
 
     py::class_<NuGeom::Translation3D>(m, "Translation")
         .def(py::init<>())
-        .def(py::init<const NuGeom::Vector3D&>())
+        .def(py::init<const NuGeom::Vector3D &>())
         .def(py::init<double, double, double>());
 
-    py::class_<NuGeom::TranslationX3D>(m, "TranslationX")
-        .def(py::init<double>());
+    py::class_<NuGeom::TranslationX3D>(m, "TranslationX").def(py::init<double>());
 
-    py::class_<NuGeom::TranslationY3D>(m, "TranslationY")
-        .def(py::init<double>());
+    py::class_<NuGeom::TranslationY3D>(m, "TranslationY").def(py::init<double>());
 
-    py::class_<NuGeom::TranslationZ3D>(m, "TranslationZ")
-        .def(py::init<double>());
+    py::class_<NuGeom::TranslationZ3D>(m, "TranslationZ").def(py::init<double>());
 }
 
 void ShapeModule(py::module &m) {
@@ -163,22 +154,25 @@ void ShapeModule(py::module &m) {
         .def("set_rotation", &NuGeom::Shape::SetRotation)
         .def("set_translation", &NuGeom::Shape::SetTranslation)
         .def("volume", &NuGeom::Shape::Volume)
-        .def_static("create", [](const std::string &description) {
+        .def_static(
+            "create",
+            [](const std::string &description) {
                 pugi::xml_document doc;
                 doc.load_string(description.c_str());
                 auto node = doc.first_child();
                 auto name = node.name();
                 return NuGeom::ShapeFactory::Initialize(name, node);
-            }, py::return_value_policy::move);
+            },
+            py::return_value_policy::move);
 }
 
 void ElementModule(py::module &m) {
     py::class_<NuGeom::Element>(m, "Element")
         .def(py::init<>())
-        .def(py::init<const std::string&>())
-        .def(py::init<const std::string&, size_t, double, size_t>(),
-             py::arg("name"), py::arg("Z"), py::arg("mass"), py::arg("A") = 0)
-        .def(py::init<const std::string&, const std::string&, size_t, double, size_t>(),
+        .def(py::init<const std::string &>())
+        .def(py::init<const std::string &, size_t, double, size_t>(), py::arg("name"), py::arg("Z"),
+             py::arg("mass"), py::arg("A") = 0)
+        .def(py::init<const std::string &, const std::string &, size_t, double, size_t>(),
              py::arg("name"), py::arg("symbol"), py::arg("Z"), py::arg("mass"), py::arg("A") = 0)
         .def(py::self == py::self)
         .def(py::self != py::self)
@@ -193,13 +187,15 @@ void ElementModule(py::module &m) {
 void MaterialModule(py::module &m) {
     py::class_<NuGeom::Material>(m, "Material")
         .def(py::init<>())
-        .def(py::init<const std::string&, double, size_t>())
+        .def(py::init<const std::string &, double, size_t>())
         .def("ncomponents", &NuGeom::Material::NComponents)
         .def("elements", &NuGeom::Material::Elements)
         .def("mass_fractions", &NuGeom::Material::MassFractions)
         .def("nelements", &NuGeom::Material::NElements)
-        .def("add_element", py::overload_cast<const NuGeom::Element&, int>(&NuGeom::Material::AddElement))
-        .def("add_element", py::overload_cast<const NuGeom::Element&, double>(&NuGeom::Material::AddElement))
+        .def("add_element",
+             py::overload_cast<const NuGeom::Element &, int>(&NuGeom::Material::AddElement))
+        .def("add_element",
+             py::overload_cast<const NuGeom::Element &, double>(&NuGeom::Material::AddElement))
         .def("add_material", &NuGeom::Material::AddMaterial)
         .def("select_element", &NuGeom::Material::SelectElement)
         .def("density", &NuGeom::Material::Density)
@@ -221,7 +217,8 @@ void VolumeModule(py::module &m) {
 
     py::class_<NuGeom::PhysicalVolume>(m, "PhysicalVolume")
         .def(py::init<>())
-        .def(py::init<std::shared_ptr<NuGeom::LogicalVolume>, NuGeom::Transform3D, NuGeom::Transform3D>())
+        .def(py::init<std::shared_ptr<NuGeom::LogicalVolume>, NuGeom::Transform3D,
+                      NuGeom::Transform3D>())
         .def("logical_volume", &NuGeom::PhysicalVolume::GetLogicalVolume)
         .def("get_transform", &NuGeom::PhysicalVolume::GetTransform)
         .def("mother", &NuGeom::PhysicalVolume::Mother)
@@ -240,13 +237,13 @@ void WorldModule(py::module &m) {
 
     py::class_<NuGeom::Ray>(m, "Ray")
         .def(py::init<>())
-        .def(py::init<const NuGeom::Vector3D&, const NuGeom::Vector3D&>())
+        .def(py::init<const NuGeom::Vector3D &, const NuGeom::Vector3D &>())
         .def("origin", &NuGeom::Ray::Origin)
         .def("direction", &NuGeom::Ray::Direction)
         .def("propagate", &NuGeom::Ray::Propagate);
 
     py::class_<NuGeom::Camera>(m, "Camera")
-        .def(py::init<const NuGeom::Vector3D&, const NuGeom::Vector3D&, double, double>())
+        .def(py::init<const NuGeom::Vector3D &, const NuGeom::Vector3D &, double, double>())
         .def("make_ray", &NuGeom::Camera::MakeRay)
         .def_static("width", &NuGeom::Camera::Width)
         .def_static("height", &NuGeom::Camera::Height);

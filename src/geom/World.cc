@@ -1,25 +1,23 @@
 #include "geom/World.hh"
-#include "geom/Ray.hh"
 #include "geom/LineSegment.hh"
-#include <limits>
-#include <iostream>
+#include "geom/Ray.hh"
 #include <deque>
+#include <iostream>
+#include <limits>
 #include <set>
 
 using NuGeom::World;
 
-NuGeom::Shape* World::GetShape(size_t idx) const {
-    if(idx == 0) return m_volume->GetShape();
-    else {
-        return m_volume -> Daughters()[idx-1]->GetLogicalVolume()->GetShape();
-    }
+NuGeom::Shape *World::GetShape(size_t idx) const {
+    if(idx == 0)
+        return m_volume->GetShape();
+    else { return m_volume->Daughters()[idx - 1]->GetLogicalVolume()->GetShape(); }
 }
 
 NuGeom::Material World::GetMaterial(size_t idx) const {
-    if(idx == 0) return m_volume->GetMaterial();
-    else {
-        return m_volume -> Daughters()[idx-1]->GetLogicalVolume()->GetMaterial();
-    }
+    if(idx == 0)
+        return m_volume->GetMaterial();
+    else { return m_volume->Daughters()[idx - 1]->GetLogicalVolume()->GetMaterial(); }
 }
 
 std::vector<NuGeom::Material> World::GetMaterials() const {
@@ -33,7 +31,7 @@ std::vector<NuGeom::Material> World::GetMaterials() const {
 }
 
 bool World::InWorld(const Vector3D &pos) const {
-    return m_volume -> GetShape() -> SignedDistance(pos) <= 0;
+    return m_volume->GetShape()->SignedDistance(pos) <= 0;
 }
 
 bool World::SphereTrace(const Ray &ray, double &distance, size_t &step, size_t &idx) const {
@@ -54,11 +52,11 @@ bool World::SphereTrace(const Ray &ray, double &distance, size_t &step, size_t &
 
 bool World::RayTrace(const Ray &ray, double &distance, size_t &idx) const {
     double tmin = std::numeric_limits<double>::infinity();
-    for(size_t i = 0; i < m_volume -> Daughters().size(); ++i) {
-        double time = m_volume -> Daughters()[i] -> Intersect(ray);
+    for(size_t i = 0; i < m_volume->Daughters().size(); ++i) {
+        double time = m_volume->Daughters()[i]->Intersect(ray);
         if(time < tmin) {
             tmin = time;
-            idx = i+1;
+            idx = i + 1;
         }
     }
     distance = tmin;
@@ -67,7 +65,7 @@ bool World::RayTrace(const Ray &ray, double &distance, size_t &idx) const {
 
 std::vector<NuGeom::LineSegment> World::GetLineSegments(const Ray &ray) const {
     std::vector<NuGeom::LineSegment> segments;
-    m_volume -> GetLineSegments(ray, segments);
+    m_volume->GetLineSegments(ray, segments);
     return segments;
 }
 
@@ -78,7 +76,7 @@ std::pair<double, size_t> World::GetSDF(const Vector3D &pos) const {
         double tmp = m_volume->Daughters()[i]->SignedDistance(pos);
         if(tmp < distance) {
             distance = tmp;
-            idx = i+1;
+            idx = i + 1;
         }
     }
 
@@ -92,7 +90,7 @@ std::pair<double, size_t> World::GetSDFNonNeg(const Vector3D &pos) const {
         double tmp = std::abs(m_volume->Daughters()[i]->SignedDistance(pos));
         if(tmp < distance) {
             distance = tmp;
-            idx = i+1;
+            idx = i + 1;
         }
     }
 

@@ -1,8 +1,8 @@
 #include "catch2/catch.hpp"
 
 #include "geom/Material.hh"
-#include "spdlog/spdlog.h"
 #include "spdlog/sinks/ostream_sink.h"
+#include "spdlog/spdlog.h"
 
 #include <sstream>
 
@@ -11,7 +11,7 @@ static std::ostringstream test_logger() {
     std::ostringstream oss;
     auto oss_sink = std::make_shared<spdlog::sinks::ostream_sink_mt>(oss);
     auto oss_logger = std::make_shared<spdlog::logger>("test_log", oss_sink);
-    oss_logger -> set_level(spdlog::level::debug);
+    oss_logger->set_level(spdlog::level::debug);
     spdlog::register_logger(oss_logger);
     spdlog::set_default_logger(oss_logger);
     return oss;

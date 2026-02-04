@@ -4,18 +4,18 @@
 using NuGeom::Vector3D;
 
 double Vector3D::Dot(const Vector3D &other) const {
-    return m_vec[0]*other.m_vec[0] + m_vec[1]*other.m_vec[1] + m_vec[2]*other.m_vec[2];
+    return m_vec[0] * other.m_vec[0] + m_vec[1] * other.m_vec[1] + m_vec[2] * other.m_vec[2];
 }
 
 Vector3D Vector3D::Cross(const Vector3D &other) const {
-    return {m_vec[1]*other.m_vec[2] - m_vec[2]*other.m_vec[1],
-            m_vec[2]*other.m_vec[0] - m_vec[0]*other.m_vec[2],
-            m_vec[0]*other.m_vec[1] - m_vec[1]*other.m_vec[0]};
+    return {m_vec[1] * other.m_vec[2] - m_vec[2] * other.m_vec[1],
+            m_vec[2] * other.m_vec[0] - m_vec[0] * other.m_vec[2],
+            m_vec[0] * other.m_vec[1] - m_vec[1] * other.m_vec[0]};
 }
 
 Vector3D Vector3D::Unit() const {
     double norm = Norm();
-    return {m_vec[0]/norm, m_vec[1]/norm, m_vec[2]/norm};
+    return {m_vec[0] / norm, m_vec[1] / norm, m_vec[2] / norm};
 }
 
 Vector3D Vector3D::Max(const Vector3D &other) const {

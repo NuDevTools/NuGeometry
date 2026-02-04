@@ -27,7 +27,7 @@ TEST_CASE("Multiple Rotations", "[Transform3D]") {
         NuGeom::Vector3D axis2{0, 1, 0};
         NuGeom::Rotation3D rot1{axis1, M_PI_2};
         NuGeom::Rotation3D rot2{axis2, -M_PI_2};
-        auto rot = rot1*rot2;
+        auto rot = rot1 * rot2;
 
         auto result = rot.Apply(input);
         CHECK(result.X() == Approx(expected.X()).margin(1e-10));

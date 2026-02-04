@@ -1,25 +1,23 @@
-#include <cstdlib>
-#include <cmath>
-#include <ctime>
-#include "geom/Material.hh"
-#include "geom/Vector3D.hh"
-#include <map>
-#include <string>
-#include "geom/Volume.hh"
-#include "geom/Ray.hh"
-#include "geom/Random.hh"
-#include "geom/World.hh"
+#include "CLI/CLI.hpp"
 #include "geom/DetectorSim.hh"
+#include "geom/Material.hh"
+#include "geom/Random.hh"
+#include "geom/Ray.hh"
+#include "geom/Vector3D.hh"
+#include "geom/Volume.hh"
+#include "geom/World.hh"
 #include "spdlog/sinks/stdout_color_sinks.h"
 #include "spdlog/spdlog.h"
-#include "CLI/CLI.hpp"
-
+#include <cmath>
+#include <cstdlib>
+#include <ctime>
+#include <map>
+#include <string>
 
 class TestRayGen {
-public:
-    TestRayGen(double emin, double emax,
-               NuGeom::Vector3D corner1, NuGeom::Vector3D corner2) :
-        m_emin{emin}, m_emax{emax} {
+  public:
+    TestRayGen(double emin, double emax, NuGeom::Vector3D corner1, NuGeom::Vector3D corner2)
+        : m_emin{emin}, m_emax{emax} {
         auto [xmin, xmax] = std::minmax(corner1.X(), corner2.X());
         auto [ymin, ymax] = std::minmax(corner1.Y(), corner2.Y());
         auto [zmin, zmax] = std::minmax(corner1.Z(), corner2.Z());
@@ -37,17 +35,16 @@ public:
         return {energy, ray};
     }
 
-private:
+  private:
     NuGeom::Ray ShootRay() const {
         auto rand = NuGeom::Random::Instance();
 
-        NuGeom::Vector3D position{rand.Uniform(m_xmin, m_xmax),
-                                  rand.Uniform(m_ymin, m_ymax),
+        NuGeom::Vector3D position{rand.Uniform(m_xmin, m_xmax), rand.Uniform(m_ymin, m_ymax),
                                   rand.Uniform(m_zmin, m_zmax)};
         double costheta = rand.Uniform(0.0, 1.0);
-        double sintheta = std::sqrt(1-costheta*costheta);
-        double phi = rand.Uniform(0.0, 2*M_PI);
-        NuGeom::Vector3D direction{sintheta*cos(phi), sintheta*sin(phi), costheta};
+        double sintheta = std::sqrt(1 - costheta * costheta);
+        double phi = rand.Uniform(0.0, 2 * M_PI);
+        NuGeom::Vector3D direction{sintheta * cos(phi), sintheta * sin(phi), costheta};
 
         return NuGeom::Ray(position, direction, 1e2);
     }
@@ -59,21 +56,19 @@ private:
 };
 
 class TestEventGen {
-public:
+  public:
     TestEventGen(std::map<size_t, double> xsec) : m_xsec{xsec} {}
 
-    double CrossSection(double, size_t pdg) const {
-        return m_xsec.at(pdg);
-    }
+    double CrossSection(double, size_t pdg) const { return m_xsec.at(pdg); }
 
-    std::map<NuGeom::Material, double> EvaluateCrossSections(double energy, const std::set<NuGeom::Material> &mats) const {
-        std::map<NuGeom::Material,double> result;
-        for (const auto &mat : mats) {
-            for (size_t i = 0; i < mat.NElements(); ++i) {
+    std::map<NuGeom::Element, double>
+    EvaluateCrossSections(double energy, const std::set<NuGeom::Material> &mats) const {
+        std::map<NuGeom::Element, double> result;
+        for(const auto &mat : mats) {
+            for(size_t i = 0; i < mat.NElements(); ++i) {
                 auto elem = mat.Elements()[i];
-                size_t pdg = 1000000000 + elem.Z() * 10000 + elem.A() * 10;
-                double xsec = CrossSection(energy, pdg);
-                result[mat] += xsec;
+                double xsec = CrossSection(energy, elem.PDG());
+                result[elem] = xsec;
             }
         }
         return result;
@@ -81,21 +76,19 @@ public:
 
     std::map<size_t, double> GetXSecs(double energy, const std::set<NuGeom::Element> &mats) {
         std::map<size_t, double> result;
-        for (const auto &elm : mats) {
-            if (result.find(elm.PDG()) == result.end()) {
+        for(const auto &elm : mats) {
+            if(result.find(elm.PDG()) == result.end()) {
                 result[elm.PDG()] = CrossSection(energy, elm.PDG());
             }
-    }
-    return result;
+        }
+        return result;
     }
 
-    
-
-private:
+  private:
     std::map<size_t, double> m_xsec;
 };
 
-int main(int argc, char **argv){
+int main(int argc, char **argv) {
     auto console = spdlog::stdout_color_mt("NuGeom");
     spdlog::set_default_logger(console);
     spdlog::set_pattern("[%n] [%^%l%$] %v");
@@ -112,13 +105,12 @@ int main(int argc, char **argv){
 
     try {
         app.parse(argc, argv);
-    } catch (const CLI::ParseError &e) {
-        return app.exit(e);
-    }
+    } catch(const CLI::ParseError &e) { return app.exit(e); }
 
-    if(verbosity == 1) spdlog::set_level(spdlog::level::debug);
-    else if(verbosity == 2) spdlog::set_level(spdlog::level::trace);
-
+    if(verbosity == 1)
+        spdlog::set_level(spdlog::level::debug);
+    else if(verbosity == 2)
+        spdlog::set_level(spdlog::level::trace);
 
     // Define materials in the detector
     NuGeom::Material mat("Water", 1.0, 2);
@@ -131,92 +123,78 @@ int main(int argc, char **argv){
     // Define the inner detector
     auto inner_box = std::make_shared<NuGeom::Box>(NuGeom::Vector3D{1, 1, 1}); // Define a 1x1x1 box
 
-    auto inner_vol = std::make_shared<NuGeom::LogicalVolume>(mat, inner_box); 
-    NuGeom::RotationX3D rot(45*M_PI/180.0);
-    auto inner_pvol = std::make_shared<NuGeom::PhysicalVolume>(inner_vol, NuGeom::Transform3D{}, rot);
+    auto inner_vol = std::make_shared<NuGeom::LogicalVolume>(mat, inner_box);
+    NuGeom::RotationX3D rot(45 * M_PI / 180.0);
+    auto inner_pvol =
+        std::make_shared<NuGeom::PhysicalVolume>(inner_vol, NuGeom::Transform3D{}, rot);
 
     // Define the outer detector
     auto outer_box = std::make_shared<NuGeom::Box>(NuGeom::Vector3D{2, 2, 2});
-    auto outer_vol = std::make_shared<NuGeom::LogicalVolume>(mat1, outer_box); 
+    auto outer_vol = std::make_shared<NuGeom::LogicalVolume>(mat1, outer_box);
     outer_vol->AddDaughter(inner_pvol);
     inner_vol->SetMother(outer_vol);
-    NuGeom::RotationX3D rot2(30*M_PI/180.0);
-    auto outer_pvol = std::make_shared<NuGeom::PhysicalVolume>(outer_vol, NuGeom::Transform3D{}, rot2);
+    NuGeom::RotationX3D rot2(30 * M_PI / 180.0);
+    auto outer_pvol =
+        std::make_shared<NuGeom::PhysicalVolume>(outer_vol, NuGeom::Transform3D{}, rot2);
     inner_pvol->SetMother(outer_pvol);
 
     // Define the "World"
     auto world_box = std::make_shared<NuGeom::Box>(NuGeom::Vector3D{4, 4, 4});
     auto world_vol = std::make_shared<NuGeom::LogicalVolume>(mat, world_box);
-    outer_vol->SetMother(world_vol); 
-    world_vol -> AddDaughter(outer_pvol);
+    outer_vol->SetMother(world_vol);
+    world_vol->AddDaughter(outer_pvol);
     NuGeom::World world(world_vol);
-
 
     NuGeom::DetectorSim sim;
     sim.Setup(world);
     sim.SetEventFile(outfile);
 
-
-    std::map<size_t, double> xsec_map = {{1000010010, 1e-38},
-                                         {1000080160, 1e-38},
-                                         {1000180400, 1e-38}};
+    std::map<size_t, double> xsec_map = {
+        {1000010010, 1e-38}, {1000080160, 1e-38}, {1000180400, 1e-38}};
 
     double max_prob = 0;
     auto raygen = std::make_shared<TestRayGen>(0, 10, NuGeom::Vector3D{-2, -2, -2},
                                                NuGeom::Vector3D{2, 2, -2});
     TestEventGen gen1(xsec_map);
 
-    
-    std::vector<NuGeom::EnergyRay>  rays;
+    std::vector<NuGeom::EnergyRay> rays;
     size_t ntest_rays = 1 << 20;
-    for (size_t i = 0; i < ntest_rays; ++i) {
-        rays.push_back(raygen->GetRay());
+    for(size_t i = 0; i < ntest_rays; ++i) { rays.push_back(raygen->GetRay()); }
+    for(const auto &ray : rays) {
+        auto segments = sim.GetLineSegments(ray.second);
+        auto materials = sim.GetMaterials(segments);
+        auto xsecs = gen1.EvaluateCrossSections(ray.first, materials);
+        std::vector<double> probs = sim.EvaluateProbs(segments, xsecs);
+        double prob_sum = std::accumulate(probs.begin(), probs.end(), 0.0);
+        if(prob_sum > max_prob) { max_prob = prob_sum; }
     }
-   for (const auto &ray : rays) {
-    
-    std::vector<NuGeom::LineSegment> segments = sim.GetLineSegments(ray.second);
-     std::set<NuGeom::Material> materials = sim.GetMaterials(segments);
-     std::map<NuGeom::Material, double> xsecs= gen1.EvaluateCrossSections(ray.first, materials);
-     std::vector<double> probs = sim.EvaluateProbs(segments, xsecs);
-     double prob_sum = std::accumulate(probs.begin(), probs.end(), 0.0);
-     if (prob_sum > max_prob) {
-         max_prob = prob_sum;
-     }
-
-   }
-   sim.SetMaxProb(max_prob);
-   spdlog::info("Set max probability to {}", max_prob);
+    sim.SetMaxProb(max_prob);
+    spdlog::info("Set max probability to {}", max_prob);
     std::ofstream hist;
-    hist.open("hit_locations2.txt", std::ios::app);
-    if (!hist.is_open()) {
-    throw std::runtime_error("Failed to open hit_locations2.txt");
-}
-//for rays const 
-size_t ntest_hits = 0;
+    hist.open("hit_locations2.txt");
+    if(!hist.is_open()) { throw std::runtime_error("Failed to open hit_locations2.txt"); }
+    // for rays const
+    size_t ntest_hits = 0;
 
-
-   while (ntest_hits < nevents) {
-        auto ray= raygen->GetRay();
-    std::vector<NuGeom::LineSegment> segments0 = sim.GetLineSegments(ray.second);
-    std::set<NuGeom::Material> materials = sim.GetMaterials(segments0);
-    std::map<NuGeom::Material, double> material_xsec_map = gen1.EvaluateCrossSections(ray.first, materials);
-    auto [interaction_point, interaction_material] = sim.Interaction(segments0, material_xsec_map);
-     if (interaction_point.X() < 9e9) {
+    while(ntest_hits < nevents) {
+        auto ray = raygen->GetRay();
+        std::vector<NuGeom::LineSegment> segments0 = sim.GetLineSegments(ray.second);
+        std::set<NuGeom::Material> materials = sim.GetMaterials(segments0);
+        std::map<NuGeom::Element, double> material_xsec_map =
+            gen1.EvaluateCrossSections(ray.first, materials);
+        auto [interaction_point, interaction_material] =
+            sim.Interaction(segments0, material_xsec_map);
+        if(interaction_material != NuGeom::Material()) {
             ntest_hits++;
-         // Valid interaction point
-         hist << interaction_point.X() << " "
-              << interaction_point.Y() << " "
-              << interaction_point.Z() << " "
-              << interaction_material.Name() << "\n";
-    }
-        else {
+            // Valid interaction point
+            hist << interaction_point.X() << " " << interaction_point.Y() << " "
+                 << interaction_point.Z() << " " << interaction_material.Name() << "\n";
+        } else {
             // No interaction occurred
-            spdlog::info("No interaction occurred for this ray.");
-     }
-     
-   }
-   hist.close();
-        
+            spdlog::debug("No interaction occurred for this ray.");
+        }
+    }
+    hist.close();
 
-   return 0;
+    return 0;
 }

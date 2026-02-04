@@ -4,9 +4,9 @@
 
 #define DISABLE_WARNING_PUSH __pragma(warning(push))
 #define DISABLE_WARNING_POP __pragma(warning(pop))
-#define DISABLE_WARNING(warningNumber) __pragma(warning(disable: warningNumber))
+#define DISABLE_WARNING(warningNumber) __pragma(warning(disable : warningNumber))
 
-#else 
+#else
 
 #define DISABLE_WARNING_PUSH _Pragma("GCC diagnostic push")
 #define DISABLE_WARNING_POP _Pragma("GCC diagnostic pop")

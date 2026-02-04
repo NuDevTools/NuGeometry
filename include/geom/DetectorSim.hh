@@ -16,12 +16,10 @@ using GeneratorCallback = std::function<double(double, size_t)>;
 using RayGenCallback = std::function<EnergyRay()>;
 
 class DetectorSim {
-public:
-    DetectorSim(double safety_factor=1.5) : m_safety_factor{safety_factor} {}
-    
-    void SetEventFile(const std::string &outfile) { 
-        m_outfile = std::ofstream(outfile);
-    }
+  public:
+    DetectorSim(double safety_factor = 1.5) : m_safety_factor{safety_factor} {}
+
+    void SetEventFile(const std::string &outfile) { m_outfile = std::ofstream(outfile); }
 
     void Setup(const std::string &geometry);
     void Setup(NuGeom::World world_) { world = world_; }
@@ -30,9 +28,10 @@ public:
     void GenerateEvents(size_t nevents) const;
     void GenerateEvents(double POT) const;
 
-    // Expects a function that returns the total cross section per nucleus given the energy and the PDG code of the target
+    // Expects a function that returns the total cross section per nucleus given the energy and the
+    // PDG code of the target
     void SetGeneratorCallback(GeneratorCallback xsec) { xsec_callback = xsec; }
-    // Expects a function that returns the next ray to propagate 
+    // Expects a function that returns the next ray to propagate
     void SetRayGenCallback(RayGenCallback ray_gen) { ray_gen_callback = ray_gen; }
     void SetMaxProb(double prob) { max_prob = prob * m_safety_factor; }
 
@@ -42,15 +41,16 @@ public:
         return world.GetLineSegments(ray);
     }
 
-    std::vector<double> EvaluateProbs(const LineSegments &segments, const std::map<NuGeom::Material, double> &xsecsmaps);
+    std::vector<double> EvaluateProbs(const LineSegments &segments,
+                                      const std::map<NuGeom::Element, double> &xsecsmaps);
 
+    std::pair<NuGeom::Vector3D, Material>
+    Interaction(const LineSegments &segments, const std::map<NuGeom::Element, double> &xsecsmaps);
 
-    NuGeom::Vector3D Interaction(const LineSegments &segments, const std::map<NuGeom::Material, double> &xsecsmaps);
-
-private:
+  private:
     HandledRay HandleRay(double energy, const NuGeom::Ray &ray) const;
     double CalculateMeanFreePath(double energy, const NuGeom::Material &material) const;
-    std::pair<Vector3D, NuGeom::Material> GetInteraction() const;
+    std::pair<Vector3D, Material> GetInteraction() const;
 
     NuGeom::World world;
     std::vector<std::shared_ptr<NuGeom::Shape>> shapes;
@@ -65,4 +65,4 @@ private:
     mutable std::ofstream m_outfile;
 };
 
-}
+} // namespace NuGeom

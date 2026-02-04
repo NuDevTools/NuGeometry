@@ -1,7 +1,7 @@
 #include "geom/Parser.hh"
 #include "spdlog/spdlog.h"
-#include <cstring>
 #include <cmath>
+#include <cstring>
 
 using NuGeom::GDMLParser;
 
@@ -76,7 +76,7 @@ void GDMLParser::ParseDefines(const pugi::xml_node &define) {
         // Convert the units
         std::string unit = node.attribute("unit").value();
         if(unit == "m") {
-            position *= 100; 
+            position *= 100;
         } else if(unit == "mm") {
             position /= 10;
         }
@@ -93,13 +93,16 @@ void GDMLParser::ParseDefines(const pugi::xml_node &define) {
 
         // Convert if needed
         double convert{};
-        if(unit == "deg") convert = M_PI/180;
-        else if(unit == "rad") convert = 1;
-        else throw std::runtime_error("GDMLParser: Invalid angle unit");
-        auto rotX = RotationX3D(xRot*convert); 
-        auto rotY = RotationY3D(yRot*convert); 
-        auto rotZ = RotationZ3D(zRot*convert); 
-        Transform3D rot = rotZ*rotY*rotX;
+        if(unit == "deg")
+            convert = M_PI / 180;
+        else if(unit == "rad")
+            convert = 1;
+        else
+            throw std::runtime_error("GDMLParser: Invalid angle unit");
+        auto rotX = RotationX3D(xRot * convert);
+        auto rotY = RotationY3D(yRot * convert);
+        auto rotZ = RotationZ3D(zRot * convert);
+        Transform3D rot = rotZ * rotY * rotX;
         m_def_rotations[name] = rot;
     }
 }
@@ -117,20 +120,20 @@ void GDMLParser::ParseMaterials(const pugi::xml_node &materials) {
         std::string name = node.attribute("name").value();
         double density = node.child("D").attribute("value").as_double();
         std::string unit = "g/cm3";
-        if(node.child("D").attribute("unit"))
-            unit = node.child("D").attribute("unit").value();
+        if(node.child("D").attribute("unit")) unit = node.child("D").attribute("unit").value();
 
         // TODO: Refactor this to make it cleaner
         if(node.child("fraction")) {
-            auto nelements = static_cast<size_t>(std::distance(node.children("fraction").begin(),
-                                                               node.children("fraction").end()));
+            auto nelements = static_cast<size_t>(
+                std::distance(node.children("fraction").begin(), node.children("fraction").end()));
 
             Material material(name, density, nelements);
             for(const auto &element : node.children("fraction")) {
                 double fraction = element.attribute("n").as_double();
                 // TODO: Allow other materials to be added to a new material
                 if(m_materials.find(element.attribute("ref").as_string()) != m_materials.end()) {
-                    material.AddMaterial(m_materials[element.attribute("ref").as_string()], fraction);         
+                    material.AddMaterial(m_materials[element.attribute("ref").as_string()],
+                                         fraction);
                 } else {
                     Element elm(element.attribute("ref").as_string());
                     material.AddElement(elm, fraction);
@@ -145,7 +148,8 @@ void GDMLParser::ParseMaterials(const pugi::xml_node &materials) {
                 auto natoms = element.attribute("n").as_double();
                 // TODO: Allow other materials to be added to a new material
                 if(m_materials.find(element.attribute("ref").as_string()) != m_materials.end()) {
-                    throw std::runtime_error("GDMLParser: Using composite materials requires mass fractions");
+                    throw std::runtime_error(
+                        "GDMLParser: Using composite materials requires mass fractions");
                 } else {
                     Element elm(element.attribute("ref").as_string());
                     if(natoms < 1) {
@@ -171,24 +175,27 @@ void GDMLParser::ParseSolids(const pugi::xml_node &solids) {
             std::string second_name = solid.child("second").attribute("ref").value();
             auto first_shape = m_shapes[first_name];
             auto second_shape = m_shapes[second_name];
-            auto shape = std::make_shared<CombinedShape>(first_shape, second_shape, ShapeBinaryOp::kSubtraction);
+            auto shape = std::make_shared<CombinedShape>(first_shape, second_shape,
+                                                         ShapeBinaryOp::kSubtraction);
             m_shapes[name] = shape;
         } else if(std::strcmp(solid.name(), "union") == 0) {
             std::string first_name = solid.child("first").attribute("ref").value();
             std::string second_name = solid.child("second").attribute("ref").value();
             auto first_shape = m_shapes[first_name];
             auto second_shape = m_shapes[second_name];
-            auto shape = std::make_shared<CombinedShape>(first_shape, second_shape, ShapeBinaryOp::kUnion);
+            auto shape =
+                std::make_shared<CombinedShape>(first_shape, second_shape, ShapeBinaryOp::kUnion);
             m_shapes[name] = shape;
         } else if(std::strcmp(solid.name(), "intersection") == 0) {
             std::string first_name = solid.child("first").attribute("ref").value();
             std::string second_name = solid.child("second").attribute("ref").value();
             auto first_shape = m_shapes[first_name];
             auto second_shape = m_shapes[second_name];
-            auto shape = std::make_shared<CombinedShape>(first_shape, second_shape, ShapeBinaryOp::kIntersect);
+            auto shape = std::make_shared<CombinedShape>(first_shape, second_shape,
+                                                         ShapeBinaryOp::kIntersect);
             m_shapes[name] = shape;
         } else {
-            std::shared_ptr<Shape> shape = ShapeFactory::Initialize(solid.name(), solid); 
+            std::shared_ptr<Shape> shape = ShapeFactory::Initialize(solid.name(), solid);
             m_shapes[name] = shape;
         }
     }
@@ -196,13 +203,13 @@ void GDMLParser::ParseSolids(const pugi::xml_node &solids) {
 
 void GDMLParser::ParseStructure(const pugi::xml_node &structure) {
     for(const auto &node : structure.children("volume")) {
-        std::string name = node.attribute("name").value(); 
+        std::string name = node.attribute("name").value();
         std::string material_ref = node.child("materialref").attribute("ref").value();
         std::string solid_ref = node.child("solidref").attribute("ref").value();
         Material material = m_materials[material_ref];
         auto shape = m_shapes[solid_ref];
         auto volume = std::make_shared<LogicalVolume>(material, shape);
-        
+
         // Check for sub-volumes
         for(const auto &subnode : node.children("physvol")) {
             std::string volume_ref = subnode.child("volumeref").attribute("ref").value();
@@ -220,7 +227,7 @@ void GDMLParser::ParseStructure(const pugi::xml_node &structure) {
                 // Convert the units
                 std::string unit = subnode.attribute("unit").value();
                 if(unit == "m") {
-                    translation *= 100; 
+                    translation *= 100;
                 } else if(unit == "mm") {
                     translation /= 10;
                 }
@@ -238,25 +245,29 @@ void GDMLParser::ParseStructure(const pugi::xml_node &structure) {
                 double convert = 1;
                 if(subnode.attribute("unit")) {
                     std::string unit = subnode.attribute("unit").value();
-                    if(unit == "deg") convert = M_PI/180;
-                    else if(unit == "rad") convert = 1;
-                    else throw std::runtime_error("GDMLParser: Invalid angle unit: " + unit);
+                    if(unit == "deg")
+                        convert = M_PI / 180;
+                    else if(unit == "rad")
+                        convert = 1;
+                    else
+                        throw std::runtime_error("GDMLParser: Invalid angle unit: " + unit);
                 }
-                auto rotX = RotationX3D(xRot*convert); 
-                auto rotY = RotationY3D(yRot*convert); 
-                auto rotZ = RotationZ3D(zRot*convert); 
-                rotation = rotZ*rotY*rotX;
+                auto rotX = RotationX3D(xRot * convert);
+                auto rotY = RotationY3D(yRot * convert);
+                auto rotZ = RotationZ3D(zRot * convert);
+                rotation = rotZ * rotY * rotX;
             }
 
             auto subvolume = m_volumes[volume_ref];
-            subvolume -> SetMother(volume);
-            auto phys_vol = std::make_shared<PhysicalVolume>(subvolume, Translation3D(translation), rotation);
+            subvolume->SetMother(volume);
+            auto phys_vol =
+                std::make_shared<PhysicalVolume>(subvolume, Translation3D(translation), rotation);
             m_phys_vols.push_back(phys_vol);
-            volume -> AddDaughter(m_phys_vols.back());
+            volume->AddDaughter(m_phys_vols.back());
         }
-      
+
         spdlog::info("Volume: {}", name);
-        spdlog::info("  Mass = {}", volume -> Mass());
+        spdlog::info("  Mass = {}", volume->Mass());
         // Store volume information
         m_volumes[name] = volume;
     }

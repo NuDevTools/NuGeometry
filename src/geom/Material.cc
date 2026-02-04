@@ -15,23 +15,21 @@ void Material::AddElement(const Element &elm, int natoms) {
         throw std::runtime_error("Too many elements added to material. Increase ncomponents");
 
     if(m_natoms.size() != m_elements.size())
-        throw std::runtime_error("Either initialize with material with all fractions or natoms. Do not mix");
+        throw std::runtime_error(
+            "Either initialize with material with all fractions or natoms. Do not mix");
 
     m_elements.push_back(elm);
     m_natoms.push_back(natoms);
 
     // Calculate fractions
     if(m_elements.size() == m_ncomponents) {
-
         double total_mass{};
         for(size_t i = 0; i < m_ncomponents; ++i) {
             m_fractions.push_back(m_elements[i].Mass() * static_cast<double>(m_natoms[i]));
             total_mass += m_fractions.back();
         }
 
-        for(size_t i = 0; i < m_ncomponents; ++i) {
-            m_fractions[i] /= total_mass;
-        }
+        for(size_t i = 0; i < m_ncomponents; ++i) { m_fractions[i] /= total_mass; }
         ComputeNumberDensities();
     }
 }
@@ -41,7 +39,8 @@ void Material::AddElement(const Element &elm, double fraction) {
         throw std::runtime_error("Too many elements added to material. Increase ncomponents");
 
     if(m_fractions.size() != m_elements.size())
-        throw std::runtime_error("Either initialize with material with all fractions or natoms. Do not mix");
+        throw std::runtime_error(
+            "Either initialize with material with all fractions or natoms. Do not mix");
 
     m_elements.push_back(elm);
     m_fractions.push_back(fraction);
@@ -71,14 +70,13 @@ void Material::AddMaterial(const Material &mat, double fraction) {
         if(it != m_elements.end()) {
             m_ncomponents--;
             auto dist = static_cast<size_t>(std::distance(m_elements.begin(), it));
-            m_fractions[dist] += fraction*mat.MassFractions()[idx++];
+            m_fractions[dist] += fraction * mat.MassFractions()[idx++];
         } else {
-            AddElement(elm, fraction*mat.MassFractions()[idx++]);
+            AddElement(elm, fraction * mat.MassFractions()[idx++]);
         }
     }
 
-    if(m_elements.size() == m_ncomponents)
-        ComputeNumberDensities();
+    if(m_elements.size() == m_ncomponents) ComputeNumberDensities();
 }
 
 NuGeom::Element Material::SelectElement(double ran) const {
@@ -100,13 +98,12 @@ double Material::NumberDensity(const Element &elm) const {
 void Material::ComputeNumberDensities() {
     static constexpr double Avogadro = 6.02214076e23;
 
-    for (size_t i = 0; i < m_elements.size(); ++i) {
+    for(size_t i = 0; i < m_elements.size(); ++i) {
         const auto &elm = m_elements[i];
-        const double mass_fraction  = m_fractions[i];   // mass fraction
-        const double atomic_mass  = elm.Mass();        // g/mol
+        const double mass_fraction = m_fractions[i]; // mass fraction
+        const double atomic_mass = elm.Mass();       // g/mol
 
-        const double number_density =
-            (m_density * mass_fraction / atomic_mass) * Avogadro; // cm^-3
+        const double number_density = (m_density * mass_fraction / atomic_mass) * Avogadro; // cm^-3
 
         m_number_densities[elm.PDG()] = number_density;
     }
