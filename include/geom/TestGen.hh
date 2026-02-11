@@ -1,19 +1,15 @@
 #pragma once
 
-#include "geom/DetectorSim.hh"
 #include "geom/Element.hh"
 #include "geom/Material.hh"
 #include "geom/Random.hh"
 #include "geom/Ray.hh"
 #include "geom/Vector3D.hh"
-#include "geom/Volume.hh"
-#include "geom/World.hh"
 #include <cmath>
 #include <cstdlib>
 #include <ctime>
 #include <map>
 #include <string>
-
 
 class TestRayGen {
   public:

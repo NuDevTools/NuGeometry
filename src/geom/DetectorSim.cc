@@ -1,5 +1,6 @@
 #include "geom/DetectorSim.hh"
 #include "geom/LineSegment.hh"
+#include "geom/Material.hh"
 #include "geom/Parser.hh"
 #include "geom/Random.hh"
 
@@ -34,7 +35,8 @@ void DetectorSim::Init(size_t nrays) {
                  max_prob);
 }
 
-std::pair<NuGeom::Vector3D, NuGeom::Material> DetectorSim::GetInteraction() const {
+std::tuple<NuGeom::Vector3D, NuGeom::Material, NuGeom::EnergyRay>
+DetectorSim::GetInteraction() const {
     auto [energy, ray] = ray_gen_callback();
     auto [probs, segments] = HandleRay(energy, ray);
     auto tot_probs = std::accumulate(probs.begin(), probs.end(), 0.0);
@@ -42,7 +44,7 @@ std::pair<NuGeom::Vector3D, NuGeom::Material> DetectorSim::GetInteraction() cons
     spdlog::debug("Probability / Max_Prop = {}", tot_probs / max_prob);
     if(tot_probs / max_prob < NuGeom::Random::Instance().Uniform(0.0, 1.0)) {
         // Return a dummy material if no interaction occurs
-        return {{}, {}};
+        return {{}, {}, {}};
     }
 
     // Determine hit location and hit material
@@ -60,7 +62,7 @@ std::pair<NuGeom::Vector3D, NuGeom::Material> DetectorSim::GetInteraction() cons
         }
     }
     spdlog::debug("Interaction occured! Placing vertex at {} on {}", position, mat.Name());
-    return {position, mat};
+    return {position, mat, {energy, ray}};
 }
 
 std::set<NuGeom::Material> DetectorSim::GetMaterials(const LineSegments &segments) const {
@@ -91,28 +93,30 @@ std::vector<double> DetectorSim::EvaluateProbs(const LineSegments &segments,
 
 void DetectorSim::GenerateEvents(size_t nevents) const {
     for(size_t i = 0; i < nevents; ++i) {
-        NuGeom::Vector3D hit_loc;
-        NuGeom::Material hit_mat;
-        while(hit_mat == NuGeom::Material()) {
-            auto hit = GetInteraction();
-            hit_loc = hit.first;
-            hit_mat = hit.second;
+        // TODO: Figure out better solution than this
+        while(true) {
+            auto [hit_loc, hit_mat, ray] = GetInteraction();
+            if(hit_mat != NuGeom::Material()) {
+                if(m_outfile) {
+                    m_outfile << hit_loc.X() << " " << hit_loc.Y() << " " << hit_loc.Z() << " "
+                              << hit_mat.Name() << " " << ray.first << "\n";
+                }
+                break;
+            }
         }
-        if(m_outfile) { m_outfile << hit_loc << ", " << hit_mat.Name() << "\n"; }
     }
 }
 
 void DetectorSim::GenerateEvents(double pot) const {
     size_t nhits = 0;
     while(m_pot < pot) {
-        NuGeom::Vector3D hit_loc;
-        NuGeom::Material hit_mat;
-        auto hit = GetInteraction();
-        hit_loc = hit.first;
-        hit_mat = hit.second;
+        auto [hit_loc, hit_mat, ray] = GetInteraction();
         if(hit_mat != NuGeom::Material()) {
             nhits++;
-            if(m_outfile) { m_outfile << hit_loc << ", " << hit_mat.Name() << "\n"; }
+            if(m_outfile) {
+                m_outfile << hit_loc.X() << " " << hit_loc.Y() << " " << hit_loc.Z() << " "
+                          << hit_mat.Name() << " " << ray.first << "\n";
+            }
         }
     }
     spdlog::info("Accumulated {} events with {} POT", nhits, m_pot);

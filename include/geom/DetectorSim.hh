@@ -50,7 +50,7 @@ class DetectorSim {
   private:
     HandledRay HandleRay(double energy, const NuGeom::Ray &ray) const;
     double CalculateMeanFreePath(double energy, const NuGeom::Material &material) const;
-    std::pair<Vector3D, Material> GetInteraction() const;
+    std::tuple<Vector3D, Material, EnergyRay> GetInteraction() const;
 
     NuGeom::World world;
     std::vector<std::shared_ptr<NuGeom::Shape>> shapes;
