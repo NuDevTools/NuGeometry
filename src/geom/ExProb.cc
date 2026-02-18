@@ -1,15 +1,12 @@
 #include "CLI/CLI.hpp"
 #include "geom/DetectorSim.hh"
 #include "geom/Material.hh"
-#include "geom/Random.hh"
-#include "geom/Ray.hh"
 #include "geom/TestGen.hh"
 #include "geom/Vector3D.hh"
 #include "geom/Volume.hh"
 #include "geom/World.hh"
 #include "spdlog/sinks/stdout_color_sinks.h"
 #include "spdlog/spdlog.h"
-#include <cmath>
 #include <cstdlib>
 #include <ctime>
 #include <map>
