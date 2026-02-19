@@ -79,6 +79,10 @@ void GDMLParser::ParseDefines(const pugi::xml_node &define) {
             position *= 100;
         } else if(unit == "mm") {
             position /= 10;
+        } else if(unit != "cm") {
+            std::cout << name << std::endl;
+            throw std::runtime_error(
+                fmt::format("GDMLParser: Invalid position unit found ({})", unit));
         }
         m_def_positions[name] = position;
     }
@@ -93,12 +97,15 @@ void GDMLParser::ParseDefines(const pugi::xml_node &define) {
 
         // Convert if needed
         double convert{};
-        if(unit == "deg")
+        if(unit == "deg" || unit == "degree")
             convert = M_PI / 180;
         else if(unit == "rad")
             convert = 1;
-        else
-            throw std::runtime_error("GDMLParser: Invalid angle unit");
+        else {
+            std::cout << name << std::endl;
+            throw std::runtime_error(
+                fmt::format("GDMLParser: Invalid angle unit found ({})", unit));
+        }
         auto rotX = RotationX3D(xRot * convert);
         auto rotY = RotationY3D(yRot * convert);
         auto rotZ = RotationZ3D(zRot * convert);
@@ -108,16 +115,38 @@ void GDMLParser::ParseDefines(const pugi::xml_node &define) {
 }
 
 void GDMLParser::ParseMaterials(const pugi::xml_node &materials) {
+    // Parse all isotopes
+    for(const auto &node : materials.children("isotope")) {
+        std::string name = node.attribute("name").value();
+        size_t z = node.attribute("Z").as_ullong();
+        size_t a = node.attribute("N").as_ullong();
+        double mass = node.child("atom").attribute("value").as_double();
+        Isotope iso(name, z, a, mass);
+    }
+
+    // Parse all elements
     for(const auto &node : materials.children("element")) {
         std::string name = node.attribute("name").value();
         std::string symbol = node.attribute("formula").value();
         size_t z = node.attribute("Z").as_ullong();
-        double mass = node.child("atom").attribute("value").as_double();
-        Element elm(name, symbol, z, mass);
+        if(node.child("atom")) {
+            double mass = node.child("atom").attribute("value").as_double();
+            Element elm(name, symbol, z, mass);
+        } else if(node.child("fraction")) {
+            Element elm(name, 0, 0);
+            for(const auto &isotope : node.children("fraction")) {
+                elm.AddIsotope(isotope.attribute("ref").value(),
+                               isotope.attribute("n").as_double());
+            }
+        } else {
+            throw std::runtime_error("Element: Invalid format");
+        }
     }
 
+    // Parse all materials
     for(const auto &node : materials.children("material")) {
         std::string name = node.attribute("name").value();
+        spdlog::debug("Parsing material {}", name);
         double density = node.child("D").attribute("value").as_double();
         std::string unit = "g/cm3";
         if(node.child("D").attribute("unit")) unit = node.child("D").attribute("unit").value();
@@ -169,6 +198,7 @@ void GDMLParser::ParseMaterials(const pugi::xml_node &materials) {
 void GDMLParser::ParseSolids(const pugi::xml_node &solids) {
     for(const auto &solid : solids) {
         std::string name = solid.attribute("name").value();
+        spdlog::debug("Parsing solid {} of type {}", name, solid.name());
         // TODO: Implement csg solids
         if(std::strcmp(solid.name(), "subtraction") == 0) {
             std::string first_name = solid.child("first").attribute("ref").value();

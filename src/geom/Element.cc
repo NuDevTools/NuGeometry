@@ -1,11 +1,25 @@
 #include "geom/Element.hh"
 #include "geom/Units.hh"
+#include "spdlog/spdlog.h"
 // #include "yaml-cpp/yaml.h"
 
 #include <cmath>
 #include <stdexcept>
 
 using NuGeom::Element;
+using NuGeom::Isotope;
+
+Isotope::Isotope(const std::string &name) {
+    if(CommonIsotopes().find(name) == CommonIsotopes().end()) {
+        throw std::runtime_error("Invalid isotope " + name);
+    }
+    *this = CommonIsotopes().at(name);
+}
+
+Isotope::Isotope(const std::string &name, size_t z, size_t a, double mass)
+    : m_name{name}, m_Z{z}, m_A{a}, m_mass{mass} {
+    if(CommonIsotopes().find(name) == CommonIsotopes().end()) { CommonIsotopes()[name] = *this; }
+}
 
 Element::Element(const std::string &name) {
     if(CommonElements().find(name) == CommonElements().end()) {
@@ -39,6 +53,27 @@ Element::Element(const std::string &name, const std::string &symbol, size_t Z, d
     if(CommonElements().find(symbol) == CommonElements().end()) {
         CommonElements()[symbol] = *this;
     }
+}
+
+void Element::AddIsotope(const std::string &name, double fraction) {
+    Isotope iso(name);
+    if(m_Z == 0)
+        m_Z = iso.m_Z;
+    else if(m_Z != iso.m_Z) { throw std::runtime_error("Isotopes must all have the same Z!"); }
+    m_isotopes.push_back({Isotope(name), fraction});
+    m_mass = 0;
+    double frac_sum = 0;
+    spdlog::trace("Element: {}", m_name);
+    for(const auto &iso_frac : m_isotopes) {
+        spdlog::trace("Adding mass = {} with frac = {}", iso_frac.first.m_mass, iso_frac.second);
+        m_mass += iso_frac.first.m_mass * iso_frac.second;
+        frac_sum += iso_frac.second;
+    }
+
+    if(frac_sum - 1e-4 > 1) { throw std::runtime_error("Isotope fractions sum larger than 1!"); }
+
+    // Update element database
+    CommonElements()[m_name] = *this;
 }
 
 size_t Element::PDG() const {
