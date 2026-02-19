@@ -673,19 +673,90 @@ TEST_CASE("Combined Shape GetBoundingBox", "[Shapes]") {
 }
 
 // ---------------------------------------------------------------------------
-// CombinedShape — Volume (Monte Carlo; use wide tolerance)
-// Note: Volume() samples the bounding box returned by GetBoundingBox(), which
-// works in local (untranslated) coordinates.  Use concentric untranslated
-// shapes so the bounding box is correct.
+// CombinedShape — Volume (inclusion-exclusion decomposition)
+//
+// All tests use untranslated shapes so that GetBoundingBox() returns the
+// correct bounds in world space (child translations are not reflected in
+// GetBoundingBox(), which is an existing limitation of the implementation).
+//
+// Geometry used throughout:
+//   bigbox  : 4×4×4 box at origin,  V = 64
+//   sphere  : r = 1 sphere at origin, V = 4π/3 ≈ 4.189
+//   sphere is entirely inside bigbox → V(bigbox ∩ sphere) = V(sphere)
 // ---------------------------------------------------------------------------
-TEST_CASE("Combined Shape Volume", "[Shapes]") {
-    // Box(4x4x4) contains Sphere(r=1) entirely.
-    // Intersection = sphere;  volume ≈ 4π/3 ≈ 4.189
-    // Bounding box of intersection = [-1,1]³ (sphere's local box), volume 8.
-    // MC fills sphere portion: fraction ≈ 4π/3/8 ≈ 0.524.
+TEST_CASE("Combined Shape Volume — kIntersect", "[Shapes]") {
+    auto bigbox = std::make_shared<NuGeom::Box>(NuGeom::Vector3D{4, 4, 4});
+    auto sphere = std::make_shared<NuGeom::Sphere>(1.0);
+    // bigbox ∩ sphere = sphere  (sphere fully contained)
+    // V(A∩B) estimated by MC over the tight intersection BB [-1,1]³
+    NuGeom::CombinedShape shape(bigbox, sphere, NuGeom::ShapeBinaryOp::kIntersect);
+    CHECK(shape.Volume() == Approx(4.0 * M_PI / 3.0).epsilon(0.01));
+}
+
+TEST_CASE("Combined Shape Volume — kUnion", "[Shapes]") {
+    auto bigbox = std::make_shared<NuGeom::Box>(NuGeom::Vector3D{4, 4, 4});
+    auto sphere = std::make_shared<NuGeom::Sphere>(1.0);
+    // V(union) = V(bigbox) + V(sphere) - V(bigbox∩sphere)
+    //          = 64        + 4π/3      - 4π/3          = 64
+    NuGeom::CombinedShape shape(bigbox, sphere, NuGeom::ShapeBinaryOp::kUnion);
+    CHECK(shape.Volume() == Approx(64.0).epsilon(0.01));
+}
+
+TEST_CASE("Combined Shape Volume — kSubtraction non-zero", "[Shapes]") {
+    auto bigbox = std::make_shared<NuGeom::Box>(NuGeom::Vector3D{4, 4, 4});
+    auto sphere = std::make_shared<NuGeom::Sphere>(1.0);
+    // kSubtraction = right − left, so CombinedShape(sphere, bigbox, kSub) = bigbox − sphere
+    // V = V(bigbox) - V(bigbox∩sphere) = 64 - 4π/3 ≈ 59.81
+    NuGeom::CombinedShape shape(sphere, bigbox, NuGeom::ShapeBinaryOp::kSubtraction);
+    CHECK(shape.Volume() == Approx(64.0 - 4.0 * M_PI / 3.0).epsilon(0.01));
+}
+
+TEST_CASE("Combined Shape Volume — kSubtraction zero result", "[Shapes]") {
+    auto bigbox = std::make_shared<NuGeom::Box>(NuGeom::Vector3D{4, 4, 4});
+    auto sphere = std::make_shared<NuGeom::Sphere>(1.0);
+    // CombinedShape(bigbox, sphere, kSub) = sphere − bigbox
+    // Sphere is entirely inside bigbox → V(sphere ∩ bigbox) = V(sphere)
+    // V = V(sphere) - V(sphere) = 0
+    NuGeom::CombinedShape shape(bigbox, sphere, NuGeom::ShapeBinaryOp::kSubtraction);
+    CHECK(shape.Volume() == Approx(0.0).margin(0.05)); // margin since result is near zero
+}
+
+TEST_CASE("Combined Shape Volume — identical shapes", "[Shapes]") {
+    // Two identical concentric spheres: A∩B = A = B, so all three formulas simplify.
+    auto s1 = std::make_shared<NuGeom::Sphere>(1.0);
+    auto s2 = std::make_shared<NuGeom::Sphere>(1.0);
+    const double v = 4.0 * M_PI / 3.0;
+
+    SECTION("kUnion = V(sphere)") {
+        NuGeom::CombinedShape shape(s1, s2, NuGeom::ShapeBinaryOp::kUnion);
+        CHECK(shape.Volume() == Approx(v).epsilon(0.01));
+    }
+    SECTION("kIntersect = V(sphere)") {
+        NuGeom::CombinedShape shape(s1, s2, NuGeom::ShapeBinaryOp::kIntersect);
+        CHECK(shape.Volume() == Approx(v).epsilon(0.01));
+    }
+    SECTION("kSubtraction = 0") {
+        NuGeom::CombinedShape shape(s1, s2, NuGeom::ShapeBinaryOp::kSubtraction);
+        CHECK(shape.Volume() == Approx(0.0).margin(0.05));
+    }
+}
+
+TEST_CASE("Combined Shape Volume — nested CSG shell", "[Shapes]") {
+    // Shell = big_sphere(r=2) − small_sphere(r=1), both concentric at origin.
+    // kSubtraction(small, big) = big − small
+    // V(shell) = V(big) - V(small) = (4π/3)*8 - (4π/3) = (4π/3)*7
+    auto small_sphere = std::make_shared<NuGeom::Sphere>(1.0);
+    auto big_sphere = std::make_shared<NuGeom::Sphere>(2.0);
+    NuGeom::CombinedShape shell(small_sphere, big_sphere, NuGeom::ShapeBinaryOp::kSubtraction);
+    const double expected = 7.0 * 4.0 * M_PI / 3.0;
+    CHECK(shell.Volume() == Approx(expected).epsilon(0.01));
+}
+
+TEST_CASE("Combined Shape Volume — result is cached", "[Shapes]") {
     auto bigbox = std::make_shared<NuGeom::Box>(NuGeom::Vector3D{4, 4, 4});
     auto sphere = std::make_shared<NuGeom::Sphere>(1.0);
     NuGeom::CombinedShape shape(bigbox, sphere, NuGeom::ShapeBinaryOp::kIntersect);
-    // MC with ~4M samples; accept 1% relative tolerance
-    CHECK(shape.Volume() == Approx(4.0 * M_PI / 3.0).epsilon(0.01));
+    const double first = shape.Volume();
+    const double second = shape.Volume();
+    CHECK(first == second);
 }

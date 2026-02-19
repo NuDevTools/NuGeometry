@@ -141,6 +141,7 @@ class CombinedShape : public Shape, RegistrableShape<CombinedShape> {
     std::shared_ptr<Shape> m_left, m_right;
     ShapeBinaryOp m_op;
     mutable double m_volume{0};
+    mutable bool m_volume_cached{false};
 };
 
 class Box : public Shape, RegistrableShape<Box> {

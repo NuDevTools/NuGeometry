@@ -172,24 +172,80 @@ std::pair<double, double> NuGeom::CombinedShape::Intersect2Impl(const Ray &ray) 
     return {t_enter, t_exit};
 }
 
-// Monte Carlo volume estimate; result is cached in m_volume.
+// Inclusion-exclusion volume decomposition:
+//
+//   Union       : V(A) + V(B) - V(A∩B)
+//   Subtraction : V(B) - V(A∩B)        (convention: right − left)
+//   Intersection: V(A∩B)
+//
+// V(A) and V(B) are obtained analytically from child shapes (O(1) for
+// primitives, recursively cached for nested CombinedShapes).
+// Only V(A∩B) requires MC, and it is sampled in the tight intersection
+// bounding box rather than the full union BB, giving a higher hit rate.
+// If the intersection BB is empty the shapes are disjoint and V(A∩B) = 0.
 double NuGeom::CombinedShape::Volume() const {
-    if(m_volume != 0) return m_volume;
+    if(m_volume_cached) return m_volume;
 
-    const BoundingBox bb = GetBoundingBox();
-    const double bb_vol = bb.Volume();
-    if(bb_vol <= 0) return 0;
+    const BoundingBox L = m_left->GetBoundingBox();
+    const BoundingBox R = m_right->GetBoundingBox();
 
-    static constexpr size_t nsamples = 1 << 22; // ~4M samples
-    auto rng = Random::Instance();
-    size_t count = 0;
-    for(size_t i = 0; i < nsamples; ++i) {
-        const Vector3D p(rng.Uniform(bb.min.X(), bb.max.X()), rng.Uniform(bb.min.Y(), bb.max.Y()),
-                         rng.Uniform(bb.min.Z(), bb.max.Z()));
-        if(SignedDistance(p) <= 0) ++count;
+    // Intersection bounding box: overlap of the two children's AABBs.
+    const BoundingBox bb_inter = {
+        Vector3D(std::max(L.min.X(), R.min.X()), std::max(L.min.Y(), R.min.Y()),
+                 std::max(L.min.Z(), R.min.Z())),
+        Vector3D(std::min(L.max.X(), R.max.X()), std::min(L.max.Y(), R.max.Y()),
+                 std::min(L.max.Z(), R.max.Z()))};
+
+    // Estimate V(A∩B) via adaptive MC over the intersection BB.
+    // When the shapes are disjoint the intersection BB is invalid and V(A∩B)=0.
+    double vol_inter = 0.0;
+    if(bb_inter.IsValid()) {
+        const double bb_inter_vol = bb_inter.Volume();
+        if(bb_inter_vol > 0) {
+            static constexpr size_t max_samples = 1 << 22; // ~4M hard cap
+            static constexpr size_t batch_size = 4096;
+            static constexpr size_t min_samples = batch_size * 8; // ~32k before first check
+            static constexpr double precision_goal = 1e-3;        // 0.1% relative error
+
+            auto rng = Random::Instance();
+            size_t count = 0, n = 0;
+
+            while(n < max_samples) {
+                const size_t this_batch = std::min(batch_size, max_samples - n);
+                for(size_t i = 0; i < this_batch; ++i) {
+                    const Vector3D p(rng.Uniform(bb_inter.min.X(), bb_inter.max.X()),
+                                     rng.Uniform(bb_inter.min.Y(), bb_inter.max.Y()),
+                                     rng.Uniform(bb_inter.min.Z(), bb_inter.max.Z()));
+                    if(m_left->SignedDistance(p) <= 0 && m_right->SignedDistance(p) <= 0) ++count;
+                }
+                n += this_batch;
+
+                if(n >= min_samples && count > 0) {
+                    const double p_hat = static_cast<double>(count) / static_cast<double>(n);
+                    const double rel_err =
+                        std::sqrt((1.0 - p_hat) / (p_hat * static_cast<double>(n)));
+                    if(rel_err < precision_goal) break;
+                }
+            }
+
+            vol_inter = bb_inter_vol * static_cast<double>(count) / static_cast<double>(n);
+        }
     }
 
-    m_volume = bb_vol * static_cast<double>(count) / static_cast<double>(nsamples);
+    // Apply inclusion-exclusion formula for each operation.
+    switch(m_op) {
+    case ShapeBinaryOp::kUnion:
+        m_volume = m_left->Volume() + m_right->Volume() - vol_inter;
+        break;
+    case ShapeBinaryOp::kIntersect:
+        m_volume = vol_inter;
+        break;
+    case ShapeBinaryOp::kSubtraction: // right − left
+        m_volume = m_right->Volume() - vol_inter;
+        break;
+    }
+
+    m_volume_cached = true;
     return m_volume;
 }
 
