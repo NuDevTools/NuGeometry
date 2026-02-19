@@ -32,14 +32,14 @@ TEST_CASE("Intersect", "[Volume]") {
     PhysicalVolume pvol(vol, NuGeom::Transform3D{}, NuGeom::Transform3D{});
 
     SECTION("Outside Volume") {
-        NuGeom::Ray ray({0, 0, -1}, {0, 0, 1});
+        NuGeom::Ray ray({0, 0, -1}, {0, 0, 1}, 1.0);
         static constexpr double expected_time = 0.5;
         CHECK_THAT(pvol.Intersect(ray), Catch::WithinAbs(expected_time, 1e-8));
     }
 
     SECTION("Inside Volume") {
         static constexpr double eps = 1e-7;
-        NuGeom::Ray ray({0, 0, -0.5 + eps}, {0, 0, 1});
+        NuGeom::Ray ray({0, 0, -0.5 + eps}, {0, 0, 1}, 1.0);
         static constexpr double expected_time = 1.0 - eps;
         CHECK_THAT(pvol.Intersect(ray), Catch::WithinAbs(expected_time, 1e-8));
     }
@@ -67,7 +67,7 @@ TEST_CASE("Line Segments", "[Volume]") {
     outer_vol->SetMother(world);
     world->AddDaughter(outer_pvol);
 
-    NuGeom::Ray ray({0, 0, -2}, {0, 0, 1});
+    NuGeom::Ray ray({0, 0, -2}, {0, 0, 1}, 1.0);
     std::vector<NuGeom::LineSegment> segments;
 
     world->GetLineSegments(ray, segments);
