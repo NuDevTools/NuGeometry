@@ -1,4 +1,5 @@
 #include "geom/Volume.hh"
+#include "geom/BVH.hh"
 #include "geom/LineSegment.hh"
 #include "geom/Ray.hh"
 #include "spdlog/spdlog.h"
@@ -8,6 +9,12 @@
 
 using NuGeom::LogicalVolume;
 using NuGeom::PhysicalVolume;
+
+LogicalVolume::LogicalVolume() = default;
+LogicalVolume::LogicalVolume(Material material, std::shared_ptr<Shape> shape)
+    : m_material{std::move(material)}, m_shape{std::move(shape)} {}
+// Out-of-line destructor so BVH's full type is visible for unique_ptr<BVH>.
+LogicalVolume::~LogicalVolume() = default;
 
 void LogicalVolume::GetMaterials(std::set<Material> &mats) const {
     mats.insert(m_material);
@@ -56,15 +63,11 @@ bool LogicalVolume::SphereTrace(const Ray &ray, double &time, size_t &step, size
 
 bool LogicalVolume::RayTrace(const Ray &ray, double &time,
                              std::shared_ptr<PhysicalVolume> &vol) const {
-    time = std::numeric_limits<double>::infinity();
-    for(const auto &daughter : Daughters()) {
-        double ctime = daughter->Intersect(ray);
-        if(ctime < time) {
-            time = ctime;
-            vol = daughter;
-        }
+    if(!m_bvh) {
+        m_bvh = std::make_unique<BVH>();
+        m_bvh->Build(m_daughters);
     }
-    return time < std::numeric_limits<double>::infinity();
+    return m_bvh->Traverse(ray, time, vol);
 }
 
 void LogicalVolume::GetLineSegments(const Ray &ray, std::vector<LineSegment> &segments) const {
@@ -84,6 +87,27 @@ void LogicalVolume::GetLineSegments(const Ray &ray, std::vector<LineSegment> &se
     auto origin = ray.Propagate(time);
     auto new_ray = Ray(origin, ray.Direction(), ray.POT());
     pvol->GetLineSegments(new_ray, segments, {});
+}
+
+NuGeom::BoundingBox PhysicalVolume::GetParentBoundingBox() const {
+    BoundingBox local_bb = m_volume->GetShape()->GetTransformedBoundingBox();
+
+    // Forward transform: local → parent  =  m_transform.Inverse()
+    const Transform3D forward = m_transform.Inverse();
+
+    const Vector3D cx[2] = {local_bb.min, local_bb.max};
+    auto c0 = forward.Apply(cx[0]);
+    Vector3D mn = c0, mx = c0;
+    for(size_t ix = 0; ix < 2; ++ix)
+        for(size_t iy = 0; iy < 2; ++iy)
+            for(size_t iz = 0; iz < 2; ++iz) {
+                if(ix == 0 && iy == 0 && iz == 0) continue;
+                Vector3D corner(cx[ix].X(), cx[iy].Y(), cx[iz].Z());
+                auto c = forward.Apply(corner);
+                mn = {std::min(mn.X(), c.X()), std::min(mn.Y(), c.Y()), std::min(mn.Z(), c.Z())};
+                mx = {std::max(mx.X(), c.X()), std::max(mx.Y(), c.Y()), std::max(mx.Z(), c.Z())};
+            }
+    return {mn, mx};
 }
 
 double PhysicalVolume::Intersect(const Ray &in_ray) const {

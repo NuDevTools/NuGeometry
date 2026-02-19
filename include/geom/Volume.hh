@@ -1,19 +1,23 @@
 #pragma once
 
+#include "geom/BoundingBox.hh"
 #include "geom/Material.hh"
 #include "geom/Shape.hh"
 #include <set>
 
 namespace NuGeom {
 
+class BVH;
 class LineSegment;
 class PhysicalVolume;
 
 class LogicalVolume {
   public:
-    LogicalVolume() = default;
-    LogicalVolume(Material material, std::shared_ptr<Shape> shape)
-        : m_material{std::move(material)}, m_shape{std::move(shape)} {}
+    // All constructors and destructor are defined out-of-line in Volume.cc so that
+    // the compiler sees the full BVH definition when instantiating unique_ptr<BVH>.
+    LogicalVolume();
+    LogicalVolume(Material material, std::shared_ptr<Shape> shape);
+    ~LogicalVolume();
 
     Material GetMaterial() const { return m_material; }
     void GetMaterials(std::set<Material> &) const;
@@ -41,6 +45,7 @@ class LogicalVolume {
     std::shared_ptr<LogicalVolume> m_mother = nullptr;
     static constexpr size_t m_max_steps{512};
     static constexpr double m_epsilon{1e-4};
+    mutable std::unique_ptr<BVH> m_bvh;
 };
 
 class PhysicalVolume {
@@ -69,6 +74,8 @@ class PhysicalVolume {
         return m_volume->GetShape()->SignedDistance(point);
     }
     double Intersect(const Ray &in_ray) const;
+    /// Returns the AABB of this volume in its parent's coordinate frame.
+    BoundingBox GetParentBoundingBox() const;
     bool RayTrace(const Ray &ray, double &time, std::shared_ptr<PhysicalVolume> &pvol) const {
         return m_volume->RayTrace(ray, time, pvol);
     }

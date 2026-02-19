@@ -1,5 +1,6 @@
 #pragma once
 
+#include "geom/BoundingBox.hh"
 #include "geom/Transform3D.hh"
 #include "geom/Vector3D.hh"
 
@@ -8,6 +9,7 @@
 #include <iostream>
 #include <map>
 #include <memory>
+#include <utility>
 
 namespace pugi {
 class xml_node;
@@ -40,10 +42,20 @@ class Shape {
     ///@return double: The signed distance from the surface
     virtual double SignedDistance(const Vector3D &) const = 0;
 
-    /// Finds if a given ray intersects the shape
-    ///@param ray: The ray to check for an intersection
-    ///@return double: The time that the intersection occurs at
+    /// Finds the first forward intersection of the ray with the shape.
+    ///@return The time t ≥ 0, or +∞ if no intersection.
     double Intersect(const Ray &in_ray) const;
+
+    /// Returns the signed entry and exit times along the ray.
+    /// t_enter < 0 means the ray origin is already inside the shape.
+    /// {+∞, +∞} means the ray misses entirely.
+    std::pair<double, double> Intersect2(const Ray &in_ray) const;
+
+    virtual BoundingBox GetBoundingBox() const = 0;
+
+    /// Returns GetBoundingBox() transformed by this shape's own rotation/translation.
+    /// Use this when building parent-space AABBs in the BVH.
+    BoundingBox GetTransformedBoundingBox() const;
 
     void SetRotation(const Rotation3D &rot) { m_rotation = rot.Inverse(); }
     void SetTranslation(const Translation3D &trans) { m_translation = trans.Inverse(); }
@@ -55,7 +67,7 @@ class Shape {
     std::pair<double, double> SolveQuadratic(double, double, double) const;
 
   private:
-    virtual double IntersectImpl(const Ray &) const = 0;
+    virtual std::pair<double, double> Intersect2Impl(const Ray &) const = 0;
     Transform3D m_rotation;
     Transform3D m_translation;
     bool identity_transform{false};
@@ -120,13 +132,15 @@ class CombinedShape : public Shape, RegistrableShape<CombinedShape> {
     static std::string Name() { return "CombinedShape"; }
     static std::unique_ptr<Shape> Construct(const pugi::xml_node &node);
 
+    BoundingBox GetBoundingBox() const override;
     double SignedDistance(const Vector3D &) const override;
     double Volume() const override;
 
   private:
-    double IntersectImpl(const Ray &) const override;
+    std::pair<double, double> Intersect2Impl(const Ray &) const override;
     std::shared_ptr<Shape> m_left, m_right;
     ShapeBinaryOp m_op;
+    mutable double m_volume{0};
 };
 
 class Box : public Shape, RegistrableShape<Box> {
@@ -143,11 +157,12 @@ class Box : public Shape, RegistrableShape<Box> {
     static std::string Name() { return "box"; }
     static std::unique_ptr<Shape> Construct(const pugi::xml_node &node);
 
+    BoundingBox GetBoundingBox() const override;
     double SignedDistance(const Vector3D &) const override;
     double Volume() const override { return m_params.X() * m_params.Y() * m_params.Z() * 8; }
 
   private:
-    double IntersectImpl(const Ray &) const override;
+    std::pair<double, double> Intersect2Impl(const Ray &) const override;
     Vector3D m_params;
 };
 
@@ -165,11 +180,12 @@ class Sphere : public Shape, RegistrableShape<Sphere> {
     static std::string Name() { return "orb"; }
     static std::unique_ptr<Shape> Construct(const pugi::xml_node &node);
 
+    BoundingBox GetBoundingBox() const override;
     double SignedDistance(const Vector3D &) const override;
     double Volume() const override { return m_radius * m_radius * m_radius * 4 * M_PI / 3.0; }
 
   private:
-    double IntersectImpl(const Ray &) const override;
+    std::pair<double, double> Intersect2Impl(const Ray &) const override;
     double m_radius;
 };
 
@@ -188,13 +204,82 @@ class Cylinder : public Shape, RegistrableShape<Cylinder> {
     static std::string Name() { return "tube"; }
     static std::unique_ptr<Shape> Construct(const pugi::xml_node &node);
 
+    BoundingBox GetBoundingBox() const override;
     double SignedDistance(const Vector3D &) const override;
     double Volume() const override { return m_radius * m_radius * m_height * M_PI; }
 
   private:
-    double IntersectImpl(const Ray &) const override;
+    std::pair<double, double> Intersect2Impl(const Ray &) const override;
     double m_radius;
     double m_height;
+};
+
+/// zplanes for defining polyhedra
+struct zplane {
+    double rmin, rmax, z;
+};
+
+class Polyhedra : public Shape, RegistrableShape<Polyhedra> {
+  public:
+    /// Initialize a polyhedra centered at the origin with a given set of sides and heights
+    /// Then rotates the polyhedra, and translates the polyhedra
+    ///@param startphi: The starting phi angle
+    ///@param deltaphi: The deltaphi of the shape
+    ///@param nsides: The number of sides for the polyhedra
+    ///@param planes: The list of z-planes defining the polyhedra
+    ///@param rot: The rotation matrix of the polyhedra
+    ///@param trans: The translation of the polyhedra from the origin
+    Polyhedra(double startphi, double deltaphi, size_t nsides, const std::vector<zplane> &planes,
+              const Rotation3D &rotation = Rotation3D(),
+              const Translation3D &translation = Translation3D());
+
+    static std::string Name() { return "polyhedra"; }
+    static std::unique_ptr<Shape> Construct(const pugi::xml_node &node);
+
+    BoundingBox GetBoundingBox() const override;
+    double SignedDistance(const Vector3D &) const override;
+    double Volume() const override;
+
+  private:
+    std::pair<double, double> Intersect2Impl(const Ray &) const override;
+
+    struct Plane {
+        Vector3D normal;
+        double distance;
+    };
+
+    double m_startphi, m_deltaphi;
+    size_t m_nsides;
+    std::vector<zplane> m_planes;
+    std::vector<Plane> m_boundaries;
+};
+
+class Trapezoid : public Shape, RegistrableShape<Trapezoid> {
+  public:
+    /// Initialize a trapezoid centered at the origin
+    /// Then rotates the trapezoid, and translates the trapezoid
+    ///@param x1: The x half-length at -z
+    ///@param x2: The x half-length at z
+    ///@param y1: The y half-length at -z
+    ///@param y2: The y half-length at z
+    ///@param z: The z half-length
+    ///@param rot: The rotation matrix of the polyhedra
+    ///@param trans: The translation of the polyhedra from the origin
+    Trapezoid(double x1, double x2, double y1, double y2, double z,
+              const Rotation3D &rotation = Rotation3D(),
+              const Translation3D &translation = Translation3D());
+
+    static std::string Name() { return "trd"; }
+    static std::unique_ptr<Shape> Construct(const pugi::xml_node &node);
+
+    BoundingBox GetBoundingBox() const override;
+    double SignedDistance(const Vector3D &) const override;
+    double Volume() const override;
+
+  private:
+    std::pair<double, double> Intersect2Impl(const Ray &) const override;
+    std::pair<double, double> m_x, m_y;
+    double m_z, m_ax, m_bx, m_ay, m_by;
 };
 
 // TODO: Implement details

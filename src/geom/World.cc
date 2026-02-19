@@ -51,16 +51,16 @@ bool World::SphereTrace(const Ray &ray, double &distance, size_t &step, size_t &
 }
 
 bool World::RayTrace(const Ray &ray, double &distance, size_t &idx) const {
-    double tmin = std::numeric_limits<double>::infinity();
-    for(size_t i = 0; i < m_volume->Daughters().size(); ++i) {
-        double time = m_volume->Daughters()[i]->Intersect(ray);
-        if(time < tmin) {
-            tmin = time;
+    std::shared_ptr<PhysicalVolume> pvol;
+    if(!m_volume->RayTrace(ray, distance, pvol)) return false;
+    const auto &daughters = m_volume->Daughters();
+    for(size_t i = 0; i < daughters.size(); ++i) {
+        if(daughters[i] == pvol) {
             idx = i + 1;
+            return true;
         }
     }
-    distance = tmin;
-    return tmin < std::numeric_limits<double>::infinity();
+    return false;
 }
 
 std::vector<NuGeom::LineSegment> World::GetLineSegments(const Ray &ray) const {

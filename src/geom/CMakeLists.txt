@@ -11,6 +11,7 @@ add_library(geom SHARED
     Element.cc
     Material.cc
     Shape.cc
+    BVH.cc
     World.cc
     Parser.cc
     Volume.cc
