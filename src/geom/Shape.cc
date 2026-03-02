@@ -220,11 +220,19 @@ double NuGeom::CombinedShape::Volume() const {
                 }
                 n += this_batch;
 
-                if(n >= min_samples && count > 0) {
+                if(n >= min_samples) {
+                    if(count == 0) break; // shapes are disjoint within this BB
                     const double p_hat = static_cast<double>(count) / static_cast<double>(n);
-                    const double rel_err =
-                        std::sqrt((1.0 - p_hat) / (p_hat * static_cast<double>(n)));
+                    const double fn = static_cast<double>(n);
+                    // Relative error on vol_inter: converges fast when p_hat is large.
+                    const double rel_err = std::sqrt((1.0 - p_hat) / (p_hat * fn));
                     if(rel_err < precision_goal) break;
+                    // Absolute error (std-dev of p_hat): converges fast when p_hat is
+                    // small, i.e. when vol_inter is a tiny fraction of bb_inter_vol.
+                    // In that case relative precision on vol_inter doesn't matter because
+                    // its absolute contribution to the final volume is negligible.
+                    const double abs_err = std::sqrt(p_hat * (1.0 - p_hat) / fn);
+                    if(abs_err < precision_goal) break;
                 }
             }
 
@@ -249,6 +257,25 @@ double NuGeom::CombinedShape::Volume() const {
     return m_volume;
 }
 
+NuGeom::BoundingBox NuGeom::TransformedShape::GetBoundingBox() const {
+    BoundingBox local_bb = m_inner->GetBoundingBox();
+    // Transform all 8 corners from inner-local to parent frame
+    const Transform3D forward = m_transform.Inverse();
+    const Vector3D cx[2] = {local_bb.min, local_bb.max};
+    auto c0 = forward.Apply(cx[0]);
+    Vector3D mn = c0, mx = c0;
+    for(size_t ix = 0; ix < 2; ++ix)
+        for(size_t iy = 0; iy < 2; ++iy)
+            for(size_t iz = 0; iz < 2; ++iz) {
+                if(ix == 0 && iy == 0 && iz == 0) continue;
+                Vector3D corner(cx[ix].X(), cx[iy].Y(), cx[iz].Z());
+                auto c = forward.Apply(corner);
+                mn = {std::min(mn.X(), c.X()), std::min(mn.Y(), c.Y()), std::min(mn.Z(), c.Z())};
+                mx = {std::max(mx.X(), c.X()), std::max(mx.Y(), c.Y()), std::max(mx.Z(), c.Z())};
+            }
+    return {mn, mx};
+}
+
 std::unique_ptr<NuGeom::Shape> NuGeom::Box::Construct(const pugi::xml_node &node) {
     // Load the box parameters
     double x = node.attribute("x").as_double();
@@ -256,14 +283,16 @@ std::unique_ptr<NuGeom::Shape> NuGeom::Box::Construct(const pugi::xml_node &node
     double z = node.attribute("z").as_double();
     Vector3D params(x, y, z);
 
-    // Convert the units
-    std::string unit = node.attribute("unit").value();
+    // Convert the units (GDML uses "lunit", fallback to "unit")
+    std::string unit = node.attribute("lunit").value();
+    if(unit.empty()) unit = node.attribute("unit").value();
     if(unit == "m") {
         params *= 100;
     } else if(unit == "mm") {
         params /= 10;
     }
 
+    // GDML <box> x/y/z are half-lengths; Box constructor expects full extents
     return std::make_unique<NuGeom::Box>(params);
 }
 
@@ -292,11 +321,11 @@ std::pair<double, double> NuGeom::Box::Intersect2Impl(const Ray &ray) const {
 }
 
 std::unique_ptr<NuGeom::Shape> NuGeom::Sphere::Construct(const pugi::xml_node &node) {
-    // Load the box parameters
     double radius = node.attribute("r").as_double();
 
-    // Convert the units
-    std::string unit = node.attribute("unit").value();
+    // Convert the units (GDML uses "lunit", fallback to "unit")
+    std::string unit = node.attribute("lunit").value();
+    if(unit.empty()) unit = node.attribute("unit").value();
     if(unit == "m") {
         radius *= 100;
     } else if(unit == "mm") {
@@ -319,7 +348,7 @@ std::pair<double, double> NuGeom::Sphere::Intersect2Impl(const Ray &ray) const {
     static constexpr double inf = std::numeric_limits<double>::infinity();
     const double a = ray.Direction() * ray.Direction();
     const double b = 2 * ray.Origin() * ray.Direction();
-    const double c = ray.Origin() * ray.Origin() - m_radius;
+    const double c = ray.Origin() * ray.Origin() - m_radius * m_radius;
     const double det = b * b - 4 * a * c;
     if(det < 0) return {inf, inf};
     const double sq = std::sqrt(det);
@@ -328,23 +357,33 @@ std::pair<double, double> NuGeom::Sphere::Intersect2Impl(const Ray &ray) const {
     return {std::min(ta, tb), std::max(ta, tb)};
 }
 
-// TODO: Handle deltaphi and rmin??
 std::unique_ptr<NuGeom::Shape> NuGeom::Cylinder::Construct(const pugi::xml_node &node) {
-    // Load the box parameters
-    double radius = node.attribute("rmax").as_double();
+    double rmax = node.attribute("rmax").as_double();
+    double rmin = node.attribute("rmin").as_double();
     double height = node.attribute("z").as_double();
 
-    // Convert the units
-    std::string unit = node.attribute("unit").value();
+    // Convert the units (GDML uses "lunit", fallback to "unit")
+    std::string unit = node.attribute("lunit").value();
+    if(unit.empty()) unit = node.attribute("unit").value();
     if(unit == "m") {
         height *= 100;
-        radius *= 100;
+        rmax *= 100;
+        rmin *= 100;
     } else if(unit == "mm") {
-        radius /= 10;
+        rmax /= 10;
+        rmin /= 10;
         height /= 10;
     }
 
-    return std::make_unique<NuGeom::Cylinder>(radius, height);
+    double half_h = height / 2.0;
+    if(rmin > 0) {
+        // Hollow cylinder: outer - inner via CSG subtraction
+        auto outer = std::make_shared<NuGeom::Cylinder>(rmax, half_h);
+        auto inner = std::make_shared<NuGeom::Cylinder>(rmin, half_h);
+        // CombinedShape kSubtraction: left - right → outer - inner
+        return std::make_unique<NuGeom::CombinedShape>(inner, outer, ShapeBinaryOp::kSubtraction);
+    }
+    return std::make_unique<NuGeom::Cylinder>(rmax, half_h);
 }
 
 // TODO: Ensure that Cylinder is centered at {0, 0, 0} and not {0, 0, height/2}
@@ -367,8 +406,8 @@ std::pair<double, double> NuGeom::Cylinder::Intersect2Impl(const Ray &ray) const
         ray.Direction().X() * ray.Direction().X() + ray.Direction().Y() * ray.Direction().Y();
     const double b =
         2 * (ray.Direction().X() * ray.Origin().X() + ray.Direction().Y() * ray.Origin().Y());
-    const double c =
-        ray.Origin().X() * ray.Origin().X() + ray.Origin().Y() * ray.Origin().Y() - m_radius;
+    const double c = ray.Origin().X() * ray.Origin().X() + ray.Origin().Y() * ray.Origin().Y() -
+                     m_radius * m_radius;
 
     double tc1, tc2;
     if(a < 1e-12) {
@@ -385,15 +424,15 @@ std::pair<double, double> NuGeom::Cylinder::Intersect2Impl(const Ray &ray) const
         tc2 = std::max(r1, r2);
     }
 
-    // Z-slab [0, m_height] (preserving existing axis convention)
+    // Z-slab [-m_height, m_height] (symmetric about origin)
     double tz1, tz2;
     const double dz = ray.Direction().Z();
     if(std::abs(dz) < 1e-12) {
-        if(ray.Origin().Z() < 0 || ray.Origin().Z() > m_height) return {inf, inf};
+        if(ray.Origin().Z() < -m_height || ray.Origin().Z() > m_height) return {inf, inf};
         tz1 = -inf;
         tz2 = inf;
     } else {
-        const double t0 = -ray.Origin().Z() / dz;
+        const double t0 = (-m_height - ray.Origin().Z()) / dz;
         const double t1 = (m_height - ray.Origin().Z()) / dz;
         tz1 = std::min(t0, t1);
         tz2 = std::max(t0, t1);

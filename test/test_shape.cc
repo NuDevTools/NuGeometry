@@ -1,6 +1,7 @@
 #include "catch2/catch.hpp"
 #include "geom/Ray.hh"
 #include "geom/Shape.hh"
+#include "pugixml.hpp"
 
 #include <cmath>
 #include <limits>
@@ -220,8 +221,9 @@ TEST_CASE("Cylinder", "[Shapes]") {
     }
 
     SECTION("Volume is correct") {
+        // Default Cylinder(r=1, half_h=1): full height=2, volume = pi*r^2*2h = 2*pi
         NuGeom::Cylinder cylinder;
-        CHECK(cylinder.Volume() == Approx(M_PI));
+        CHECK(cylinder.Volume() == Approx(2 * M_PI));
     }
 
     SECTION("Intersect2 from side at z=0") {
@@ -254,6 +256,115 @@ TEST_CASE("Cylinder", "[Shapes]") {
         // Bounding box uses half-height convention matching SDF
         CHECK(bb.min.Z() == Approx(-1.0));
         CHECK(bb.max.Z() == Approx(1.0));
+    }
+}
+
+TEST_CASE("Cylinder z-convention centered at origin", "[Shapes]") {
+    // Cylinder(r=2, half_h=5): extends from z=-5 to z=+5
+    NuGeom::Cylinder cyl(2.0, 5.0);
+
+    SECTION("Intersect2 along z-axis from below") {
+        NuGeom::Ray ray{{0, 0, -10}, {0, 0, 1}, 1.0};
+        auto [t1, t2] = cyl.Intersect2(ray);
+        CHECK(t1 == Approx(5.0));  // enters at z=-5
+        CHECK(t2 == Approx(15.0)); // exits at z=+5
+    }
+
+    SECTION("Intersect2 along z-axis from above") {
+        NuGeom::Ray ray{{0, 0, 10}, {0, 0, -1}, 1.0};
+        auto [t1, t2] = cyl.Intersect2(ray);
+        CHECK(t1 == Approx(5.0));  // enters at z=+5
+        CHECK(t2 == Approx(15.0)); // exits at z=-5
+    }
+
+    SECTION("SDF at caps") {
+        CHECK(cyl.SignedDistance({0, 0, 5}) == Approx(0.0));
+        CHECK(cyl.SignedDistance({0, 0, -5}) == Approx(0.0));
+        CHECK(cyl.SignedDistance({0, 0, 6}) == Approx(1.0));
+        CHECK(cyl.SignedDistance({0, 0, -6}) == Approx(1.0));
+    }
+
+    SECTION("Volume = pi * r^2 * 2h") {
+        CHECK(cyl.Volume() == Approx(M_PI * 4.0 * 10.0));
+    }
+}
+
+TEST_CASE("Hollow cylinder via Construct (rmin > 0)", "[Shapes]") {
+    // Simulate a GDML <tube rmax="5" rmin="3" z="10"/>
+    // Construct returns a CombinedShape (outer - inner)
+    pugi::xml_document doc;
+    auto node = doc.append_child("tube");
+    node.append_attribute("rmax").set_value(5.0);
+    node.append_attribute("rmin").set_value(3.0);
+    node.append_attribute("z").set_value(10.0);
+    node.append_attribute("name").set_value("test_tube");
+
+    auto shape = NuGeom::Cylinder::Construct(node);
+    REQUIRE(shape);
+
+    SECTION("Center is inside hollow region (outside shape)") {
+        // Origin is inside the inner cylinder → outside the hollow tube
+        CHECK(shape->SignedDistance({0, 0, 0}) > 0);
+    }
+
+    SECTION("Point in annular region is inside") {
+        CHECK(shape->SignedDistance({4, 0, 0}) < 0);
+    }
+
+    SECTION("Point outside outer radius is outside") {
+        CHECK(shape->SignedDistance({6, 0, 0}) > 0);
+    }
+
+    SECTION("Ray through annular region hits twice") {
+        NuGeom::Ray ray{{10, 0, 0}, {-1, 0, 0}, 1.0};
+        auto [t1, t2] = shape->Intersect2(ray);
+        CHECK(t1 == Approx(5.0)); // enters outer at x=5
+        CHECK(t2 == Approx(7.0)); // exits inner at x=3
+    }
+}
+
+TEST_CASE("TransformedShape applies coordinate transform", "[Shapes]") {
+    // Box at origin, wrap with translation (0,0,5) → box is now at z=5
+    auto box = std::make_shared<NuGeom::Box>(NuGeom::Vector3D{2, 2, 2});
+    auto transform = (NuGeom::Rotation3D{} * NuGeom::Translation3D{0, 0, 5}).Inverse();
+    NuGeom::TransformedShape tbox(box, transform);
+
+    SECTION("SDF at displaced position") {
+        // Center of transformed box is at (0,0,5)
+        CHECK(tbox.SignedDistance({0, 0, 5}) == Approx(-1.0));
+        CHECK(tbox.SignedDistance({0, 0, 0}) > 0);
+    }
+
+    SECTION("Intersect2 hits displaced box") {
+        NuGeom::Ray ray{{0, 0, -2}, {0, 0, 1}, 1.0};
+        auto [t1, t2] = tbox.Intersect2(ray);
+        CHECK(t1 == Approx(6.0)); // enters at z=4
+        CHECK(t2 == Approx(8.0)); // exits at z=6
+    }
+
+    SECTION("BoundingBox reflects displacement") {
+        auto bb = tbox.GetBoundingBox();
+        CHECK(bb.min.Z() == Approx(4.0));
+        CHECK(bb.max.Z() == Approx(6.0));
+    }
+}
+
+TEST_CASE("CombinedShape with TransformedShape second operand", "[Shapes]") {
+    // Subtract a displaced box from a big box (simulates GDML CSG with positionref)
+    auto big = std::make_shared<NuGeom::Box>(NuGeom::Vector3D{10, 10, 10});
+    auto small = std::make_shared<NuGeom::Box>(NuGeom::Vector3D{2, 2, 2});
+    auto transform = (NuGeom::Rotation3D{} * NuGeom::Translation3D{0, 0, 3}).Inverse();
+    auto positioned_small = std::make_shared<NuGeom::TransformedShape>(small, transform);
+
+    // big - positioned_small: kSubtraction = right - left → CombinedShape(left=small, right=big)
+    NuGeom::CombinedShape shape(positioned_small, big, NuGeom::ShapeBinaryOp::kSubtraction);
+
+    SECTION("Point in subtracted region is outside") {
+        CHECK(shape.SignedDistance({0, 0, 3}) > 0);
+    }
+
+    SECTION("Point away from subtracted region is inside") {
+        CHECK(shape.SignedDistance({0, 0, -3}) < 0);
     }
 }
 

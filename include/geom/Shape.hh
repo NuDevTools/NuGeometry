@@ -144,6 +144,29 @@ class CombinedShape : public Shape, RegistrableShape<CombinedShape> {
     mutable bool m_volume_cached{false};
 };
 
+/// Wraps a shape with an additional coordinate transform.
+/// Used to position the second operand of CSG operations in GDML.
+class TransformedShape : public Shape {
+  public:
+    /// @param inner The shape to wrap
+    /// @param transform Parent-to-local transform (inverse of the placement)
+    TransformedShape(std::shared_ptr<Shape> inner, const Transform3D &transform)
+        : Shape(), m_inner{std::move(inner)}, m_transform{transform} {}
+
+    BoundingBox GetBoundingBox() const override;
+    double SignedDistance(const Vector3D &point) const override {
+        return m_inner->SignedDistance(m_transform.Apply(point));
+    }
+    double Volume() const override { return m_inner->Volume(); }
+
+  private:
+    std::pair<double, double> Intersect2Impl(const Ray &ray) const override {
+        return m_inner->Intersect2(Transform3D::ApplyRay(ray, m_transform));
+    }
+    std::shared_ptr<Shape> m_inner;
+    Transform3D m_transform;
+};
+
 class Box : public Shape, RegistrableShape<Box> {
   public:
     /// Initialize a box with one corner at (-x/2,-y/2,-z/2) and the other at (x/2,y/2,z/2)
@@ -207,7 +230,7 @@ class Cylinder : public Shape, RegistrableShape<Cylinder> {
 
     BoundingBox GetBoundingBox() const override;
     double SignedDistance(const Vector3D &) const override;
-    double Volume() const override { return m_radius * m_radius * m_height * M_PI; }
+    double Volume() const override { return m_radius * m_radius * 2.0 * m_height * M_PI; }
 
   private:
     std::pair<double, double> Intersect2Impl(const Ray &) const override;
