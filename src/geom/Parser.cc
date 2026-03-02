@@ -5,6 +5,14 @@
 
 using NuGeom::GDMLParser;
 
+GDMLParser::GDMLParser(const std::string &filename) {
+    pugi::xml_document doc;
+    pugi::xml_parse_result result = doc.load_file(filename.c_str());
+    if(!result) throw std::runtime_error("GDMLParser: Invalid geometry file");
+
+    *this = GDMLParser(doc);
+}
+
 GDMLParser::GDMLParser(const pugi::xml_document &doc) {
     auto root = doc.child("gdml");
     ParseDefines(root.child("define"));
@@ -36,6 +44,13 @@ NuGeom::Vector3D GDMLParser::GetPosition(const std::string &name) const {
         throw std::runtime_error(fmt::format("GDMLParser: Undefined position {}", name));
 
     return m_def_positions.at(name);
+}
+
+std::shared_ptr<NuGeom::Shape> GDMLParser::GetShape(const std::string &name) const {
+    if(m_shapes.find(name) == m_shapes.end())
+        throw std::runtime_error(fmt::format("GDMLParser: Undefined shape {}", name));
+
+    return m_shapes.at(name);
 }
 
 NuGeom::Transform3D GDMLParser::GetTransform(const std::string &name) const {
@@ -195,35 +210,91 @@ void GDMLParser::ParseMaterials(const pugi::xml_node &materials) {
     }
 }
 
+/// Parse the position/rotation of the second operand in a CSG solid.
+/// Returns a parent-to-local transform for the second shape.
+static NuGeom::Transform3D
+ParseCSGTransform(const pugi::xml_node &solid,
+                  const std::map<std::string, NuGeom::Vector3D> &positions,
+                  const std::map<std::string, NuGeom::Transform3D> &rotations) {
+    using namespace NuGeom;
+    Vector3D pos;
+    Transform3D rot;
+
+    if(solid.child("positionref")) {
+        std::string ref = solid.child("positionref").attribute("ref").value();
+        auto it = positions.find(ref);
+        if(it != positions.end()) pos = it->second;
+    } else if(solid.child("position")) {
+        auto pos_node = solid.child("position");
+        double x = pos_node.attribute("x").as_double();
+        double y = pos_node.attribute("y").as_double();
+        double z = pos_node.attribute("z").as_double();
+        pos = Vector3D(x, y, z);
+        std::string unit = pos_node.attribute("unit").value();
+        if(unit.empty()) unit = pos_node.attribute("lunit").value();
+        if(unit == "m")
+            pos *= 100;
+        else if(unit == "mm")
+            pos /= 10;
+    }
+
+    if(solid.child("rotationref")) {
+        std::string ref = solid.child("rotationref").attribute("ref").value();
+        auto it = rotations.find(ref);
+        if(it != rotations.end()) rot = it->second;
+    } else if(solid.child("rotation")) {
+        auto rot_node = solid.child("rotation");
+        double xRot = rot_node.attribute("x").as_double();
+        double yRot = rot_node.attribute("y").as_double();
+        double zRot = rot_node.attribute("z").as_double();
+        double convert = 1;
+        std::string unit = rot_node.attribute("unit").value();
+        if(unit.empty()) unit = rot_node.attribute("aunit").value();
+        if(unit == "deg" || unit == "degree") convert = M_PI / 180;
+        auto rotX = RotationX3D(xRot * convert);
+        auto rotY = RotationY3D(yRot * convert);
+        auto rotZ = RotationZ3D(zRot * convert);
+        rot = rotZ * rotY * rotX;
+    }
+
+    return (rot * Translation3D(pos)).Inverse();
+}
+
 void GDMLParser::ParseSolids(const pugi::xml_node &solids) {
     for(const auto &solid : solids) {
         std::string name = solid.attribute("name").value();
         spdlog::debug("Parsing solid {} of type {}", name, solid.name());
-        // TODO: Implement csg solids
-        if(std::strcmp(solid.name(), "subtraction") == 0) {
+        if(std::strcmp(solid.name(), "subtraction") == 0 ||
+           std::strcmp(solid.name(), "union") == 0 ||
+           std::strcmp(solid.name(), "intersection") == 0) {
             std::string first_name = solid.child("first").attribute("ref").value();
             std::string second_name = solid.child("second").attribute("ref").value();
             auto first_shape = m_shapes[first_name];
             auto second_shape = m_shapes[second_name];
-            auto shape = std::make_shared<CombinedShape>(first_shape, second_shape,
-                                                         ShapeBinaryOp::kSubtraction);
-            m_shapes[name] = shape;
-        } else if(std::strcmp(solid.name(), "union") == 0) {
-            std::string first_name = solid.child("first").attribute("ref").value();
-            std::string second_name = solid.child("second").attribute("ref").value();
-            auto first_shape = m_shapes[first_name];
-            auto second_shape = m_shapes[second_name];
-            auto shape =
-                std::make_shared<CombinedShape>(first_shape, second_shape, ShapeBinaryOp::kUnion);
-            m_shapes[name] = shape;
-        } else if(std::strcmp(solid.name(), "intersection") == 0) {
-            std::string first_name = solid.child("first").attribute("ref").value();
-            std::string second_name = solid.child("second").attribute("ref").value();
-            auto first_shape = m_shapes[first_name];
-            auto second_shape = m_shapes[second_name];
-            auto shape = std::make_shared<CombinedShape>(first_shape, second_shape,
-                                                         ShapeBinaryOp::kIntersect);
-            m_shapes[name] = shape;
+
+            // Parse position/rotation of second operand relative to first
+            auto second_transform = ParseCSGTransform(solid, m_def_positions, m_def_rotations);
+            bool has_transform = !second_transform.IsIdentity();
+            std::shared_ptr<Shape> positioned_second =
+                has_transform ? std::make_shared<TransformedShape>(second_shape, second_transform)
+                              : second_shape;
+
+            ShapeBinaryOp op;
+            if(std::strcmp(solid.name(), "subtraction") == 0) {
+                op = ShapeBinaryOp::kSubtraction;
+                // CombinedShape convention: right - left. GDML: first - second.
+                // So pass (second, first) to get first - second.
+                m_shapes[name] =
+                    std::make_shared<CombinedShape>(positioned_second, first_shape, op);
+            } else if(std::strcmp(solid.name(), "union") == 0) {
+                op = ShapeBinaryOp::kUnion;
+                m_shapes[name] =
+                    std::make_shared<CombinedShape>(first_shape, positioned_second, op);
+            } else {
+                op = ShapeBinaryOp::kIntersect;
+                m_shapes[name] =
+                    std::make_shared<CombinedShape>(first_shape, positioned_second, op);
+            }
         } else {
             std::shared_ptr<Shape> shape = ShapeFactory::Initialize(solid.name(), solid);
             m_shapes[name] = shape;
@@ -238,7 +309,7 @@ void GDMLParser::ParseStructure(const pugi::xml_node &structure) {
         std::string solid_ref = node.child("solidref").attribute("ref").value();
         Material material = m_materials[material_ref];
         auto shape = m_shapes[solid_ref];
-        auto volume = std::make_shared<LogicalVolume>(material, shape);
+        auto volume = std::make_shared<LogicalVolume>(name, material, shape);
 
         // Check for sub-volumes
         for(const auto &subnode : node.children("physvol")) {
@@ -249,13 +320,15 @@ void GDMLParser::ParseStructure(const pugi::xml_node &structure) {
                 std::string position_ref = subnode.child("positionref").attribute("ref").value();
                 translation = m_def_positions[position_ref];
             } else if(subnode.child("position")) {
-                double x = subnode.attribute("x").as_double();
-                double y = subnode.attribute("y").as_double();
-                double z = subnode.attribute("z").as_double();
+                auto pos_node = subnode.child("position");
+                double x = pos_node.attribute("x").as_double();
+                double y = pos_node.attribute("y").as_double();
+                double z = pos_node.attribute("z").as_double();
                 translation = Vector3D(x, y, z);
 
                 // Convert the units
-                std::string unit = subnode.attribute("unit").value();
+                std::string unit = pos_node.attribute("unit").value();
+                if(unit.empty()) unit = pos_node.attribute("lunit").value();
                 if(unit == "m") {
                     translation *= 100;
                 } else if(unit == "mm") {
@@ -267,21 +340,19 @@ void GDMLParser::ParseStructure(const pugi::xml_node &structure) {
             if(subnode.child("rotationref")) {
                 rotation = m_def_rotations[subnode.child("rotationref").attribute("ref").value()];
             } else if(subnode.child("rotation")) {
-                double xRot = node.attribute("x").as_double();
-                double yRot = node.attribute("y").as_double();
-                double zRot = node.attribute("z").as_double();
+                auto rot_node = subnode.child("rotation");
+                double xRot = rot_node.attribute("x").as_double();
+                double yRot = rot_node.attribute("y").as_double();
+                double zRot = rot_node.attribute("z").as_double();
 
                 // Convert if needed
                 double convert = 1;
-                if(subnode.attribute("unit")) {
-                    std::string unit = subnode.attribute("unit").value();
-                    if(unit == "deg")
-                        convert = M_PI / 180;
-                    else if(unit == "rad")
-                        convert = 1;
-                    else
-                        throw std::runtime_error("GDMLParser: Invalid angle unit: " + unit);
-                }
+                std::string unit = rot_node.attribute("unit").value();
+                if(unit.empty()) unit = rot_node.attribute("aunit").value();
+                if(unit == "deg" || unit == "degree")
+                    convert = M_PI / 180;
+                else if(unit != "rad" && !unit.empty())
+                    throw std::runtime_error("GDMLParser: Invalid angle unit: " + unit);
                 auto rotX = RotationX3D(xRot * convert);
                 auto rotY = RotationY3D(yRot * convert);
                 auto rotZ = RotationZ3D(zRot * convert);
@@ -289,16 +360,15 @@ void GDMLParser::ParseStructure(const pugi::xml_node &structure) {
             }
 
             auto subvolume = m_volumes[volume_ref];
-            subvolume->SetMother(volume);
-            auto phys_vol =
-                std::make_shared<PhysicalVolume>(subvolume, Translation3D(translation), rotation);
+            auto phys_vol = std::make_shared<PhysicalVolume>(volume_ref, subvolume,
+                                                             Translation3D(translation), rotation);
             m_phys_vols.push_back(phys_vol);
             volume->AddDaughter(m_phys_vols.back());
         }
 
         spdlog::info("Volume: {}", name);
-        spdlog::info("  Mass = {}", volume->Mass());
-        // Store volume information
+        // spdlog::info("  Mass = {}", volume->Mass());
+        //  Store volume information
         m_volumes[name] = volume;
     }
 }

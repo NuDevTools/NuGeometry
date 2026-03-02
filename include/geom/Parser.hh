@@ -20,6 +20,7 @@ class Parser {};
 
 class GDMLParser : public Parser {
   public:
+    GDMLParser(const std::string &);
     GDMLParser(const pugi::xml_document &);
     World GetWorld() const { return m_world; }
     double GetConstant(const std::string &) const;
@@ -27,6 +28,7 @@ class GDMLParser : public Parser {
     Transform3D GetTransform(const std::string &) const;
     Material GetMaterial(const std::string &) const;
     std::vector<Material> GetMaterials() const;
+    std::shared_ptr<Shape> GetShape(const std::string &) const;
 
   private:
     void ParseDefines(const pugi::xml_node &);
