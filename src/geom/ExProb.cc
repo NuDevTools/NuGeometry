@@ -12,8 +12,6 @@
 #include <map>
 #include <string>
 
-
-
 int main(int argc, char **argv) {
     auto console = spdlog::stdout_color_mt("NuGeom");
     spdlog::set_default_logger(console);
@@ -58,16 +56,13 @@ int main(int argc, char **argv) {
     auto outer_box = std::make_shared<NuGeom::Box>(NuGeom::Vector3D{2, 2, 2});
     auto outer_vol = std::make_shared<NuGeom::LogicalVolume>(mat1, outer_box);
     outer_vol->AddDaughter(inner_pvol);
-    inner_vol->SetMother(outer_vol);
     NuGeom::RotationX3D rot2(30 * M_PI / 180.0);
     auto outer_pvol =
         std::make_shared<NuGeom::PhysicalVolume>(outer_vol, NuGeom::Transform3D{}, rot2);
-    inner_pvol->SetMother(outer_pvol);
 
     // Define the "World"
     auto world_box = std::make_shared<NuGeom::Box>(NuGeom::Vector3D{4, 4, 4});
     auto world_vol = std::make_shared<NuGeom::LogicalVolume>(mat, world_box);
-    outer_vol->SetMother(world_vol);
     world_vol->AddDaughter(outer_pvol);
     NuGeom::World world(world_vol);
 
@@ -125,9 +120,8 @@ int main(int argc, char **argv) {
     // Alternative loop using POT instead of number of events
     while(m_pot < pot) {
         auto ray = raygen->GetRay();
-        m_pot += ray.second.POT()/sim.GetMaxProb();
-        
-        
+        m_pot += ray.second.POT() / sim.GetMaxProb();
+
         std::vector<NuGeom::LineSegment> segments0 = sim.GetLineSegments(ray.second);
         std::set<NuGeom::Material> materials = sim.GetMaterials(segments0);
         std::map<NuGeom::Element, double> material_xsec_map =
@@ -144,7 +138,7 @@ int main(int argc, char **argv) {
             spdlog::debug("No interaction occurred for this ray.");
         }
     }
-        
+
     spdlog::info("Accumulated {} events with {} POT", ntest_hits, m_pot);
     hist.close();
 

@@ -208,9 +208,7 @@ void VolumeModule(py::module &m) {
         .def(py::init<NuGeom::Material, std::shared_ptr<NuGeom::Shape>>())
         .def("material", &NuGeom::LogicalVolume::GetMaterial)
         .def("shape", &NuGeom::LogicalVolume::GetShape)
-        .def("mother", &NuGeom::LogicalVolume::Mother)
         .def("daughters", &NuGeom::LogicalVolume::Daughters)
-        .def("set_mother", &NuGeom::LogicalVolume::SetMother)
         .def("add_daughter", &NuGeom::LogicalVolume::AddDaughter)
         .def("volume", &NuGeom::LogicalVolume::Volume)
         .def("mass", &NuGeom::LogicalVolume::Mass);
