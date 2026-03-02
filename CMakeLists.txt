@@ -43,6 +43,13 @@ option(BUILD_SHARED_LIBS "Enable compilation of shared libraries" ON)
 option(ENABLE_TESTING "Enable Test Builds" OFF)
 option(ENABLE_INTERACTIVE "Enable interactively moving around" OFF)
 
+# Interactive — must find SFML before add_subdirectory(external) so that
+# imgui-sfml (fetched by CPM) can link against the SFML::* targets.
+if(ENABLE_INTERACTIVE)
+    find_package(SFML 3 COMPONENTS System Window Graphics REQUIRED)
+    find_package(OpenGL REQUIRED)
+endif()
+
 # Include external libraries
 include(CMake/CPM.cmake)
 add_subdirectory(external)
@@ -62,11 +69,6 @@ set(LIBSUFFIX ${CMAKE_SHARED_LIBRARY_SUFFIX})
 set(BUILDPATH ${CMAKE_CURRENT_BINARY_DIR})
 set(INSTALLPATH ${CMAKE_INSTALL_PREFIX})
 configure_file(include/geom/System.hh.in ${CMAKE_CURRENT_SOURCE_DIR}/include/geom/System.hh)
-
-# Interactive
-if(ENABLE_INTERACTIVE)
-    find_package(SFML 2.5 COMPONENTS system window graphics REQUIRED)
-endif()
 
 # Testing
 if(ENABLE_TESTING)

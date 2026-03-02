@@ -38,6 +38,12 @@ add_executable(prob_test2
 target_link_libraries(prob_test2 PRIVATE project_options project_warnings
                                 PUBLIC geom CLI11::CLI11)
 
+add_executable(ray_debug
+    ray_debug.cc
+)
+target_link_libraries(ray_debug PRIVATE project_options project_warnings
+                               PUBLIC geom CLI11::CLI11)
+
 if(ENABLE_PYTHON)
     pybind11_add_module(nugeom PythonInterface.cc)
     target_link_libraries(nugeom PRIVATE project_options project_warnings

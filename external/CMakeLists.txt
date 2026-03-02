@@ -52,12 +52,12 @@ if(ENABLE_INTERACTIVE)
     CPMAddPackage(
         NAME imgui
         GITHUB_REPOSITORY ocornut/imgui
-        VERSION 1.90
+        GIT_TAG v1.91.6
     )
     CPMAddPackage(
         NAME imgui-sfml
         GITHUB_REPOSITORY SFML/imgui-sfml
-        VERSION 2.6
+        GIT_TAG v3.0
         OPTIONS
             "IMGUI_DIR ${imgui_SOURCE_DIR}"
             "IMGUI_SFML_FIND_SFML OFF"
