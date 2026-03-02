@@ -43,6 +43,7 @@ Element::Element(const std::string &name, const std::string &symbol, size_t Z, d
                  size_t A)
     : m_name{name}, m_symbol{symbol}, m_Z{Z}, m_mass{mass} {
     if(A == 0) {
+        // Look up from the name.
         m_A = static_cast<size_t>(mass);
     } else {
         m_A = A;

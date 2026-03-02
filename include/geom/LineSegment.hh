@@ -28,6 +28,18 @@ class LineSegment {
     double m_length;
     size_t m_idx;
     Material m_material;
+
+    friend fmt::formatter<NuGeom::LineSegment>;
 };
 
 } // namespace NuGeom
+
+template <> struct fmt::formatter<NuGeom::LineSegment> {
+    constexpr auto parse(fmt::format_parse_context &ctx) { return ctx.begin(); }
+
+    template <typename FormatContext>
+    auto format(const NuGeom::LineSegment &line, FormatContext &ctx) const {
+        return fmt::format_to(ctx.out(), "LineSegment(start={}, end={}, length={}, material={})",
+                              line.m_start, line.m_end, line.m_length, line.m_material.Name());
+    }
+};

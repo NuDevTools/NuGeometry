@@ -56,5 +56,8 @@ TEST_CASE("Material", "[Materials]") {
         dummy.AddElement(NuGeom::Element("Nitrogen"), 0.7);
         dummy.AddElement(NuGeom::Element("Oxygen"), 0.7);
         CHECK_THAT(oss.str(), Catch::Contains("Mass fractions sum to 1.4 and not 1"));
+        // Reset spdlog default logger so later tests don't write to the destroyed oss.
+        spdlog::drop_all();
+        spdlog::set_default_logger(std::make_shared<spdlog::logger>("default"));
     }
 }

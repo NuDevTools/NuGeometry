@@ -27,6 +27,8 @@ class Random {
 
     template <typename T> T Uniform(T low, T high) { return m_rng->uniform(low, high); }
 
+    template <typename T> T Normal(T mean, T sigma) { return m_rng->variate<T>(mean, sigma); }
+
     template <typename T> T Pick(const std::vector<T> &vec) { return m_rng->pick(vec); }
 
     template <typename T> std::size_t SelectIndex(const T &array) {

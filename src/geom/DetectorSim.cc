@@ -20,14 +20,19 @@ void DetectorSim::Setup(const std::string &geometry) {
 
 void DetectorSim::Init(size_t nrays) {
     // Calculate the max_prob and store it with the safety factor
+    size_t last_update = 0;
     for(size_t i = 0; i < nrays; ++i) {
+        if(i % 1000 == 0) { spdlog::info("Shot {} / {} rays. Max prob = {}", i, nrays, max_prob); }
         auto [energy, ray] = ray_gen_callback();
         auto [probs, segments] = HandleRay(energy, ray);
         auto prob_tot = std::accumulate(probs.begin(), probs.end(), 0.0);
         if(prob_tot > max_prob) {
             spdlog::debug("Updating max prob: {} -> {}", max_prob, prob_tot);
             max_prob = prob_tot;
+            last_update = i;
         }
+        // Maximum prob seems stable. Exit early
+        if(i - last_update > 10000) break;
     }
 
     max_prob *= m_safety_factor;
@@ -104,6 +109,7 @@ void DetectorSim::GenerateEvents(size_t nevents) const {
                 break;
             }
         }
+        if(i % 100 == 0) spdlog::info("Generated {} / {} events", i, nevents);
     }
 }
 
