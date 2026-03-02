@@ -88,7 +88,10 @@ void Transform3D::Decompose(Scale3D &scale, Rotation3D &rot, Translation3D &tran
     scale.SetTransform({sx, 0, 0, 0, 0, sy, 0, 0, 0, 0, sz, 0});
     rot.SetTransform({m_mat[0] / sx, m_mat[1] / sy, m_mat[2] / sz, 0, m_mat[4] / sx, m_mat[5] / sy,
                       m_mat[6] / sz, 0, m_mat[8] / sx, m_mat[9] / sy, m_mat[10] / sz, 0});
-    trans.SetTransform({1, 0, 0, m_mat[3], 0, 1, 0, m_mat[7], 0, 0, 1, m_mat[11]});
+    // Extract translation in the pre-rotation frame so that rot(trans(p)) = R*p + t_raw.
+    // Since rot(trans(p)) = R*(p + t_dec), we need R*t_dec = t_raw, i.e. t_dec = R^T * t_raw.
+    auto t_dec = rot.Inverse().Apply({m_mat[3], m_mat[7], m_mat[11]});
+    trans.SetTransform({1, 0, 0, t_dec.X(), 0, 1, 0, t_dec.Y(), 0, 0, 1, t_dec.Z()});
 }
 
 NuGeom::Vector3D Transform3D::ApplyPoint(const Vector3D &point, const Transform3D &trans) {
