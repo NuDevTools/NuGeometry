@@ -16,9 +16,13 @@ add_executable(nugeometry-testsuite
     test_volume.cc
     test_parser.cc
     test_bvh.cc
+    bench_segments.cc
 )
 target_link_libraries(nugeometry-testsuite PRIVATE project_options project_warnings catch_main 
                                            PUBLIC geom spdlog::spdlog)
+
+target_compile_definitions(nugeometry-testsuite PRIVATE
+    NUGEOM_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 
 include(CTest)
 catch_discover_tests(nugeometry-testsuite)

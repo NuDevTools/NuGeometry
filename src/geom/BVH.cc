@@ -98,6 +98,33 @@ void BVH::TraverseNode(size_t idx, const NuGeom::Ray &ray, double &best_time,
         return;
     }
 
-    if(node.left != kInvalid) TraverseNode(node.left, ray, best_time, best_pv_idx);
-    if(node.right != kInvalid) TraverseNode(node.right, ray, best_time, best_pv_idx);
+    if(node.left != kInvalid && node.right != kInvalid) {
+        // Visit the nearer child first for better culling.
+        // Use the ray's origin position along the split axis as a heuristic:
+        // compare AABB min boundaries to decide order.
+        const auto &lbox = m_nodes[node.left].bbox;
+        const auto &rbox = m_nodes[node.right].bbox;
+        // Cheap heuristic: compare centroids along the ray direction.
+        // If the right centroid is closer along the dominant ray axis, swap.
+        double l_near = 0, r_near = 0;
+        for(size_t a = 0; a < 3; ++a) {
+            double inv_d = ray.InvDirection()[a];
+            if(std::isfinite(inv_d)) {
+                double lt = ((inv_d > 0 ? lbox.min[a] : lbox.max[a]) - ray.Origin()[a]) * inv_d;
+                double rt = ((inv_d > 0 ? rbox.min[a] : rbox.max[a]) - ray.Origin()[a]) * inv_d;
+                l_near = std::max(l_near, lt);
+                r_near = std::max(r_near, rt);
+            }
+        }
+        if(l_near <= r_near) {
+            TraverseNode(node.left, ray, best_time, best_pv_idx);
+            TraverseNode(node.right, ray, best_time, best_pv_idx);
+        } else {
+            TraverseNode(node.right, ray, best_time, best_pv_idx);
+            TraverseNode(node.left, ray, best_time, best_pv_idx);
+        }
+    } else {
+        if(node.left != kInvalid) TraverseNode(node.left, ray, best_time, best_pv_idx);
+        if(node.right != kInvalid) TraverseNode(node.right, ray, best_time, best_pv_idx);
+    }
 }

@@ -82,9 +82,9 @@ void LogicalVolume::GetLineSegments(const Ray &ray, std::vector<LineSegment> &se
     auto current_ray = ray;
 
     for(size_t iter = 0; iter < kMaxIter; ++iter) {
-        auto current_local = Transform3D::ApplyRay(current_ray, from_global);
-        auto shift_ray =
-            Ray(current_local.Propagate(eps), current_local.Direction(), current_local.POT());
+        auto current_local = Transform3D::ApplyRayDirect(current_ray, from_global);
+        auto shift_ray = Ray(current_local.Propagate(eps), current_local.Direction(),
+                             current_local.POT(), false);
 
         // Always compute exit time from this volume's shape.
         double exit_time = m_shape->Intersect(shift_ray);
@@ -108,20 +108,20 @@ void LogicalVolume::GetLineSegments(const Ray &ray, std::vector<LineSegment> &se
             auto seg_before = segments.size();
             pvol->GetLineSegments(current_ray, segments, from_global);
             if(segments.size() > seg_before) {
-                current_ray = Ray(segments.back().End(), ray.Direction(), ray.POT());
+                current_ray = Ray(segments.back().End(), ray.Direction(), ray.POT(), false);
                 continue;
             }
             // Daughter didn't add segments — skip past it.
             // Intersect2 may return (inf, inf) if the ray grazes the AABB but
             // misses the actual shape; guard against non-finite dt2.
-            auto daughter_local = Transform3D::ApplyRay(current_local, pvol->GetTransform());
+            auto daughter_local = Transform3D::ApplyRayDirect(current_local, pvol->GetTransform());
             auto [dt1, dt2] = pvol->GetLogicalVolume()->GetShape()->Intersect2(daughter_local);
             if(std::isfinite(dt2) && dt2 > eps) {
                 segments.emplace_back(current_ray.Origin(), current_ray.Propagate(dt2 + eps),
                                       pvol->GetLogicalVolume()->GetMaterial());
-                current_ray = Ray(segments.back().End(), ray.Direction(), ray.POT());
+                current_ray = Ray(segments.back().End(), ray.Direction(), ray.POT(), false);
             } else {
-                current_ray = Ray(current_ray.Propagate(eps), ray.Direction(), ray.POT());
+                current_ray = Ray(current_ray.Propagate(eps), ray.Direction(), ray.POT(), false);
             }
             continue;
         }
@@ -143,12 +143,12 @@ void LogicalVolume::GetLineSegments(const Ray &ray, std::vector<LineSegment> &se
 
         // Enter daughter (recurse DOWN — bounded by nesting depth).
         auto origin = current_ray.Propagate(time);
-        auto daughter_ray = Ray(origin, ray.Direction(), ray.POT());
+        auto daughter_ray = Ray(origin, ray.Direction(), ray.POT(), false);
         pvol->GetLineSegments(daughter_ray, segments, from_global);
 
         // Continue from daughter's exit point.
         if(segments.empty()) return;
-        current_ray = Ray(segments.back().End(), ray.Direction(), ray.POT());
+        current_ray = Ray(segments.back().End(), ray.Direction(), ray.POT(), false);
     }
     spdlog::warn("LogicalVolume::GetLineSegments: iteration limit reached in '{}'", m_name);
 }
@@ -204,9 +204,9 @@ void PhysicalVolume::GetLineSegments(const Ray &in_ray, std::vector<LineSegment>
     const auto daughter_fg = from_global * m_transform;
 
     for(size_t iter = 0; iter < kMaxIter; ++iter) {
-        auto local_ray = Transform3D::ApplyRay(current_ray, from_global);
+        auto local_ray = Transform3D::ApplyRayDirect(current_ray, from_global);
         auto ray = TransformRay(local_ray);
-        auto shift_ray = Ray(ray.Propagate(eps), ray.Direction(), ray.POT());
+        auto shift_ray = Ray(ray.Propagate(eps), ray.Direction(), ray.POT(), false);
 
         // Always compute exit time from this volume's shape.
         double exit_time = m_volume->GetShape()->Intersect(shift_ray);
@@ -234,23 +234,24 @@ void PhysicalVolume::GetLineSegments(const Ray &in_ray, std::vector<LineSegment>
             auto seg_before = segments.size();
             pvol->GetLineSegments(current_ray, segments, daughter_fg);
             if(segments.size() > seg_before) {
-                current_ray = Ray(segments.back().End(), in_ray.Direction(), in_ray.POT());
+                current_ray = Ray(segments.back().End(), in_ray.Direction(), in_ray.POT(), false);
                 continue;
             }
             // Daughter returned without adding segments (boundary precision
             // issue).  Compute its exit in our local frame and skip past it.
             // Intersect2 may return (inf, inf) if the ray grazes the AABB but
             // misses the actual shape; guard against non-finite dt2.
-            auto daughter_local = Transform3D::ApplyRay(ray, pvol->GetTransform());
+            auto daughter_local = Transform3D::ApplyRayDirect(ray, pvol->GetTransform());
             auto [dt1, dt2] = pvol->GetLogicalVolume()->GetShape()->Intersect2(daughter_local);
             if(std::isfinite(dt2) && dt2 > eps) {
                 // Emit daughter's material for its full extent
                 segments.emplace_back(current_ray.Origin(), current_ray.Propagate(dt2 + eps),
                                       pvol->GetLogicalVolume()->GetMaterial());
-                current_ray = Ray(segments.back().End(), in_ray.Direction(), in_ray.POT());
+                current_ray = Ray(segments.back().End(), in_ray.Direction(), in_ray.POT(), false);
             } else {
                 // Daughter is negligible at this point; skip it
-                current_ray = Ray(current_ray.Propagate(eps), in_ray.Direction(), in_ray.POT());
+                current_ray =
+                    Ray(current_ray.Propagate(eps), in_ray.Direction(), in_ray.POT(), false);
             }
             continue;
         }
@@ -273,12 +274,12 @@ void PhysicalVolume::GetLineSegments(const Ray &in_ray, std::vector<LineSegment>
         if(!pvol) return; // exited volume, no daughter ahead
 
         // Enter daughter (recurse DOWN only — bounded by nesting depth).
-        auto daughter_ray = Ray(next_origin, in_ray.Direction(), in_ray.POT());
+        auto daughter_ray = Ray(next_origin, in_ray.Direction(), in_ray.POT(), false);
         pvol->GetLineSegments(daughter_ray, segments, daughter_fg);
 
         // Continue from daughter's exit point.
         if(segments.empty()) return;
-        current_ray = Ray(segments.back().End(), in_ray.Direction(), in_ray.POT());
+        current_ray = Ray(segments.back().End(), in_ray.Direction(), in_ray.POT(), false);
     }
     spdlog::warn("PhysicalVolume::GetLineSegments: iteration limit reached in '{}'", m_name);
 }

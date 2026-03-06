@@ -29,15 +29,15 @@ struct BoundingBox {
     /// Returns true if the ray hits the box with t in [t_near, t_far).
     bool Intersect(const Ray &ray, double t_near = 0.0,
                    double t_far = std::numeric_limits<double>::infinity()) const {
+        const auto &inv_dir = ray.InvDirection();
         for(size_t axis = 0; axis < 3; ++axis) {
             const double orig = ray.Origin()[axis];
-            const double dir = ray.Direction()[axis];
+            const double inv_d = inv_dir[axis];
             const double lo = min[axis];
             const double hi = max[axis];
-            if(std::abs(dir) < 1e-12) {
+            if(!std::isfinite(inv_d)) {
                 if(orig < lo || orig > hi) return false;
             } else {
-                const double inv_d = 1.0 / dir;
                 double t0 = (lo - orig) * inv_d;
                 double t1 = (hi - orig) * inv_d;
                 if(inv_d < 0) std::swap(t0, t1);

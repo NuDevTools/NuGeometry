@@ -41,6 +41,9 @@ class Transform3D {
     static Ray ApplyRay(const Ray &, const Transform3D &);
     static Ray ApplyRay(const Ray &, const Translation3D &, const Rotation3D &);
     static Ray TranslateRay(const Ray &ray, const Translation3D &trans);
+    /// Apply the 3x4 matrix directly to a ray (no Decompose, no normalization).
+    /// Origin gets the full affine transform; direction gets only the 3x3 rotation part.
+    static Ray ApplyRayDirect(const Ray &ray, const Transform3D &transform);
     bool IsIdentity() const { return m_mat == identity; }
     constexpr std::array<double, 12> Identity() const { return identity; }
 

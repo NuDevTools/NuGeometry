@@ -120,6 +120,16 @@ NuGeom::Ray Transform3D::ApplyRay(const Ray &ray, const Translation3D &trans,
     return {origin, direction, ray.POT()};
 }
 
+NuGeom::Ray Transform3D::ApplyRayDirect(const Ray &ray, const Transform3D &t) {
+    auto origin = t.Apply(ray.Origin());
+    const auto &m = t.m_mat;
+    const auto &d = ray.Direction();
+    Vector3D direction(m[0] * d.X() + m[1] * d.Y() + m[2] * d.Z(),
+                       m[4] * d.X() + m[5] * d.Y() + m[6] * d.Z(),
+                       m[8] * d.X() + m[9] * d.Y() + m[10] * d.Z());
+    return {origin, direction, ray.POT(), false};
+}
+
 Rotation3D::Rotation3D(const Vector3D &vec, double angle) : Transform3D() {
     // Ensure the vector is a unit vector
     auto axis = vec.Unit();
