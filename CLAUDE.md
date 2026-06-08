@@ -79,9 +79,18 @@ auto shape = ShapeFactory::Initialize("Box", node);
 
 `TestGen` / `ExProb` provide probability calculation utilities used by the `prob_test` and `prob_test2` executables.
 
+`RayInteractionSim` (`include/geom/InteractionViz.hh`) is a debugging/visualization helper: it shoots rays through a `World`, decides probabilistically whether each ray interacts (sampling an optical depth from per-material mean free paths), generates outgoing particles at the interaction vertex, and traces each secondary back through the geometry via `World::GetLineSegments`. Each `ShootRay` returns an `InteractionEvent` holding the primary path, the vertex/material, and the outgoing `ParticleTrack`s. The cross-section model (`SetCrossSection` / `SetConstantCrossSection`) and secondary generator (`SetSecondaryGenerator` / `SetSecondaryModel`) are pluggable; the built-ins are tuned for visibility, not physics accuracy.
+
 ### Ray Tracing / Visualization
 
 `main.cc` renders detector geometry as a PPM image using sphere tracing (iterative SDF stepping) with Phong shading and shadows. The camera (`include/geom/Camera.hh`) projects rays through the scene.
+
+The `interaction_viz` executable (`src/geom/interaction_viz.cc`) is a headless tool built around `RayInteractionSim`. It shoots a beam of rays through a GDML geometry, records which rays interacted, and writes (1) a console summary of interactions per material, (2) a human-readable event log, and (3) a dependency-free SVG that draws the volumes, incoming rays (grey), interaction vertices (red) and the outgoing-particle tracks (coloured) projected onto a chosen plane. It opens in any browser, so it is useful for debugging geometry and ray tracing without a GUI.
+
+```bash
+./build/src/geom/interaction_viz -g SimpleBoxes.geom.manual.gdml -n 150 \
+    --xsec 3e-24 --secondaries 4 --proj zy --svg interactions.svg -o interactions.log
+```
 
 ### Python Bindings
 

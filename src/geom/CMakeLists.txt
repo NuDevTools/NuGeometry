@@ -16,6 +16,7 @@ add_library(geom SHARED
     Parser.cc
     Volume.cc
     DetectorSim.cc
+    InteractionViz.cc
 )
 target_link_libraries(geom PRIVATE project_options project_warnings
                            PUBLIC geom_utils yaml::cpp pugixml::pugixml)
@@ -43,6 +44,12 @@ add_executable(ray_debug
 )
 target_link_libraries(ray_debug PRIVATE project_options project_warnings
                                PUBLIC geom CLI11::CLI11)
+
+add_executable(interaction_viz
+    interaction_viz.cc
+)
+target_link_libraries(interaction_viz PRIVATE project_options project_warnings
+                                      PUBLIC geom CLI11::CLI11)
 
 if(ENABLE_PYTHON)
     pybind11_add_module(nugeom PythonInterface.cc)
