@@ -12,6 +12,7 @@
 
 #include "ViewerCommon.hh"
 #include "geom/DetectorSim.hh" // defines NuGeom::EnergyRay
+#include "geom/HepMCFluxReader.hh"
 #include "geom/LineSegment.hh"
 #include "geom/Parser.hh"
 #include "geom/TestGen.hh"
@@ -21,6 +22,7 @@
 #include <imgui.h>
 #include <misc/cpp/imgui_stdlib.h>
 
+#include <cctype>
 #include <cstdio>
 #include <fstream>
 #include <iomanip>
@@ -48,6 +50,108 @@ static std::vector<NuGeom::Ray> load_rays(const std::string &path, char *err_buf
     while(f >> ox >> oy >> oz >> dx >> dy >> dz >> pot)
         out.emplace_back(NuGeom::Vector3D{ox, oy, oz}, NuGeom::Vector3D{dx, dy, dz}, pot,
                          /*normalize=*/false);
+    return out;
+}
+
+// ---------------------------------------------------------------------------
+// Flux CSV I/O — dk2nu-derived neutrino flux used to test the Achilles adapter.
+//
+// Column layout (one neutrino per line, with a header line):
+//     pid, wgt, E, px, py, pz, x, y, z
+//   - pid        : neutrino PDG code (flavour)
+//   - wgt        : per-sample importance weight  (stored as Ray::POT)
+//   - E          : neutrino energy
+//   - px,py,pz   : momentum direction            (Ray direction, normalised)
+//   - x,y,z      : production / decay vertex      (Ray origin)
+//
+// This is the format the adapter consumes; loading it here lets us shoot the
+// parsed rays through the geometry and confirm origins/directions look sane.
+// ---------------------------------------------------------------------------
+struct FluxRay {
+    NuGeom::Ray ray{{0, 0, 0}, {0, 0, 1}, 1.0};
+    int pdg{0};
+    double energy{0.0};
+};
+
+static std::vector<FluxRay> load_flux_csv(const std::string &path, size_t max_rays, char *err_buf,
+                                          size_t err_sz, size_t *n_skipped) {
+    std::vector<FluxRay> out;
+    std::ifstream f(path);
+    if(!f) {
+        std::snprintf(err_buf, err_sz, "Cannot open flux CSV: %s", path.c_str());
+        return out;
+    }
+
+    size_t skipped = 0;
+    std::string line;
+    while(std::getline(f, line) && out.size() < max_rays) {
+        // Trim leading whitespace to inspect the first character.
+        size_t lead = line.find_first_not_of(" \t\r\n");
+        if(lead == std::string::npos) continue; // blank line
+        char c0 = line[lead];
+        // Skip the header / comment lines (anything not starting with a number).
+        if(!(std::isdigit(static_cast<unsigned char>(c0)) || c0 == '+' || c0 == '-')) continue;
+
+        // Split on commas.
+        std::vector<std::string> tok;
+        size_t start = 0;
+        for(size_t i = 0; i <= line.size(); ++i) {
+            if(i == line.size() || line[i] == ',') {
+                tok.push_back(line.substr(start, i - start));
+                start = i + 1;
+            }
+        }
+        if(tok.size() < 9) {
+            ++skipped;
+            continue;
+        }
+
+        try {
+            int pdg = std::stoi(tok[0]);
+            double wgt = std::stod(tok[1]);
+            double E = std::stod(tok[2]);
+            NuGeom::Vector3D dir{std::stod(tok[3]), std::stod(tok[4]), std::stod(tok[5])};
+            NuGeom::Vector3D pos{std::stod(tok[6]), std::stod(tok[7]), std::stod(tok[8])};
+
+            FluxRay fr;
+            fr.ray = NuGeom::Ray(pos, dir, wgt, /*normalize=*/true);
+            fr.pdg = pdg;
+            fr.energy = E;
+            out.push_back(fr);
+        } catch(const std::exception &) { ++skipped; }
+    }
+    if(n_skipped) *n_skipped = skipped;
+    return out;
+}
+
+static bool ends_with(const std::string &s, const std::string &suffix) {
+    return s.size() >= suffix.size() &&
+           s.compare(s.size() - suffix.size(), suffix.size(), suffix) == 0;
+}
+
+// Unified flux loader: NuHepMC (.hepmc/.hepmc3) or CSV, dispatched on the file
+// extension. For NuHepMC files the recorded beam->detector translation is
+// applied at load (so beam-frame rays land on the detector geometry).
+static std::vector<FluxRay> load_flux(const std::string &path, size_t max_rays, char *err_buf,
+                                      size_t err_sz, size_t *n_skipped) {
+    if(!(ends_with(path, ".hepmc") || ends_with(path, ".hepmc3")))
+        return load_flux_csv(path, max_rays, err_buf, err_sz, n_skipped);
+
+    if(n_skipped) *n_skipped = 0;
+    std::vector<FluxRay> out;
+    try {
+        auto flux = NuGeom::LoadHepMCFlux(path, /*offset_override=*/nullptr, max_rays);
+        out.reserve(flux.samples.size());
+        for(const auto &fs : flux.samples) {
+            FluxRay fr;
+            fr.ray = fs.ray;
+            fr.pdg = fs.pdg;
+            fr.energy = fs.energy;
+            out.push_back(fr);
+        }
+    } catch(const std::exception &e) {
+        std::snprintf(err_buf, err_sz, "NuHepMC flux load: %s", e.what());
+    }
     return out;
 }
 
@@ -94,6 +198,13 @@ int main() {
     bool fill_volumes = true;
     std::string raylog_path{"rays.log"};
     bool auto_log_rays = false;
+
+    // Flux-CSV (dk2nu adapter) rays — kept separate from the beam ray history.
+    std::vector<RayRecord> flux_records;
+    std::string fluxcsv_path{"flux.csv"};
+    int flux_limit = 200;
+    bool show_flux = true;
+    char flux_status[160] = {};
 
     std::map<std::string, sf::Color> palette;
     std::map<std::string, NuGeom::Material> mat_registry;
@@ -329,6 +440,49 @@ int main() {
                 }
             }
 
+            // --- Flux file (dk2nu adapter validation) ---
+            ImGui::Separator();
+            ImGui::Text("Flux file (dk2nu adapter):");
+            ImGui::SetNextItemWidth(PANEL_W - 20.f);
+            ImGui::InputText("##fluxpath", &fluxcsv_path);
+            if(ImGui::IsItemHovered())
+                ImGui::SetTooltip("NuHepMC (.hepmc/.hepmc3): beam->detector transform "
+                                  "applied from file metadata.\n"
+                                  "CSV: pid,wgt,E,px,py,pz,x,y,z "
+                                  "(origin=(x,y,z), direction=(px,py,pz), pot=wgt)");
+            ImGui::SliderInt("Max rays##flux", &flux_limit, 1, 2000);
+            if(ImGui::Button("Load flux rays", {-1.f, 0})) {
+                err_buf[0] = '\0';
+                flux_status[0] = '\0';
+                size_t skipped = 0;
+                auto frays = load_flux(fluxcsv_path, static_cast<size_t>(flux_limit), err_buf,
+                                       sizeof(err_buf), &skipped);
+                flux_records.clear();
+                flux_records.reserve(frays.size());
+                for(const auto &fr : frays) {
+                    RayRecord rec;
+                    rec.ray = fr.ray;
+                    try {
+                        rec.segs = world.GetLineSegments(fr.ray);
+                        for(const auto &s : rec.segs) {
+                            assign_color(s.GetMaterial().Name(), palette);
+                            mat_registry.emplace(s.GetMaterial().Name(), s.GetMaterial());
+                        }
+                    } catch(const std::exception &e) {
+                        std::snprintf(err_buf, sizeof(err_buf), "Flux GetLineSegments: %s",
+                                      e.what());
+                    }
+                    flux_records.push_back(std::move(rec));
+                }
+                std::snprintf(flux_status, sizeof(flux_status),
+                              "Loaded %zu flux rays (%zu skipped)", frays.size(), skipped);
+            }
+            if(!flux_records.empty()) {
+                if(ImGui::Button("Clear flux rays", {-1.f, 0})) flux_records.clear();
+                ImGui::Checkbox("Show flux rays", &show_flux);
+            }
+            if(flux_status[0]) ImGui::TextColored({0.6f, 0.9f, 1.f, 1.f}, "%s", flux_status);
+
             if(!ray_history.empty()) {
                 const RayRecord &latest = ray_history.back();
                 ImGui::Separator();
@@ -445,6 +599,55 @@ int main() {
                     const auto &o = ray_history[ri].ray.Origin();
                     glPointSize(8.f);
                     glColor4f(1.f, 1.f, 0.f, 1.f);
+                    glBegin(GL_POINTS);
+                    glVertex3f(static_cast<float>(o.X()), static_cast<float>(o.Y()),
+                               static_cast<float>(o.Z()));
+                    glEnd();
+                }
+            }
+
+            // Draw flux-CSV rays (origins + material-coloured segments).
+            if(show_flux && !flux_records.empty()) {
+                // Length used to draw rays that never enter the geometry, so the
+                // parsed direction is still visible crossing the scene.
+                float miss_len =
+                    static_cast<float>(std::sqrt(std::pow(bbox.max.X() - bbox.min.X(), 2) +
+                                                 std::pow(bbox.max.Y() - bbox.min.Y(), 2) +
+                                                 std::pow(bbox.max.Z() - bbox.min.Z(), 2)));
+                for(const auto &rec : flux_records) {
+                    // Material-coloured segments where the ray crosses volumes.
+                    glLineWidth(2.f);
+                    for(const auto &seg : rec.segs) {
+                        sf::Color col = assign_color(seg.GetMaterial().Name(), palette);
+                        glColor4f(col.r / 255.f, col.g / 255.f, col.b / 255.f, 0.9f);
+                        glBegin(GL_LINES);
+                        glVertex3f(static_cast<float>(seg.Start().X()),
+                                   static_cast<float>(seg.Start().Y()),
+                                   static_cast<float>(seg.Start().Z()));
+                        glVertex3f(static_cast<float>(seg.End().X()),
+                                   static_cast<float>(seg.End().Y()),
+                                   static_cast<float>(seg.End().Z()));
+                        glEnd();
+                    }
+
+                    const auto &o = rec.ray.Origin();
+                    // Rays that miss every volume: draw the parsed direction faintly.
+                    if(rec.segs.empty()) {
+                        const auto &d = rec.ray.Direction();
+                        glLineWidth(1.f);
+                        glColor4f(0.5f, 0.8f, 1.f, 0.35f);
+                        glBegin(GL_LINES);
+                        glVertex3f(static_cast<float>(o.X()), static_cast<float>(o.Y()),
+                                   static_cast<float>(o.Z()));
+                        glVertex3f(static_cast<float>(o.X() + miss_len * d.X()),
+                                   static_cast<float>(o.Y() + miss_len * d.Y()),
+                                   static_cast<float>(o.Z() + miss_len * d.Z()));
+                        glEnd();
+                    }
+
+                    // Origin marker (cyan) — the production/decay vertex.
+                    glPointSize(4.f);
+                    glColor4f(0.f, 0.9f, 1.f, 1.f);
                     glBegin(GL_POINTS);
                     glVertex3f(static_cast<float>(o.X()), static_cast<float>(o.Y()),
                                static_cast<float>(o.Z()));
