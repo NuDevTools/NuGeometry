@@ -2,7 +2,7 @@
 #include "fmt/ranges.h"
 #include "geom/Utilities.hh"
 
-#include "spdlog/spdlog.h"
+#include "geom/Logging.hh"
 
 #include <algorithm>
 #include <iostream>
@@ -45,14 +45,14 @@ void Material::AddElement(const Element &elm, double fraction) {
 
     m_elements.push_back(elm);
     m_fractions.push_back(fraction);
-    spdlog::debug("Adding {} with fraction {}", elm.Name(), fraction);
+    NuGeom::Log().debug("Adding {} with fraction {}", elm.Name(), fraction);
 
     // Calculate fractions
     if(m_elements.size() == m_ncomponents) {
         auto sum = std::accumulate(m_fractions.begin(), m_fractions.end(), 0.0);
         if(!NuGeom::is_close(sum, 1.0, 1e-4)) {
-            spdlog::warn("Material: {}", fmt::join(m_fractions, ", "));
-            spdlog::warn("Material: Mass fractions sum to {} and not 1", sum);
+            NuGeom::Log().warn("Material: {}", fmt::join(m_fractions, ", "));
+            NuGeom::Log().warn("Material: Mass fractions sum to {} and not 1", sum);
         }
         ComputeNumberDensities();
     }
@@ -67,7 +67,7 @@ void Material::AddMaterial(const Material &mat, double fraction) {
 
     m_ncomponents += mat.NElements() - 1;
 
-    spdlog::debug("Adding mat {} with NElements {}", mat.Name(), mat.NElements());
+    NuGeom::Log().debug("Adding mat {} with NElements {}", mat.Name(), mat.NElements());
 
     size_t idx = 0;
     for(const auto &elm : mat.Elements()) {

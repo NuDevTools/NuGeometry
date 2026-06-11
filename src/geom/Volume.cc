@@ -1,8 +1,8 @@
 #include "geom/Volume.hh"
 #include "geom/BVH.hh"
 #include "geom/LineSegment.hh"
+#include "geom/Logging.hh"
 #include "geom/Ray.hh"
-#include "spdlog/spdlog.h"
 
 #include <limits>
 #include <numeric>
@@ -150,7 +150,7 @@ void LogicalVolume::GetLineSegments(const Ray &ray, std::vector<LineSegment> &se
         if(segments.empty()) return;
         current_ray = Ray(segments.back().End(), ray.Direction(), ray.POT(), false);
     }
-    spdlog::warn("LogicalVolume::GetLineSegments: iteration limit reached in '{}'", m_name);
+    NuGeom::Log().warn("LogicalVolume::GetLineSegments: iteration limit reached in '{}'", m_name);
 }
 
 bool PhysicalVolume::RayTrace(const Ray &ray, double &time,
@@ -281,7 +281,7 @@ void PhysicalVolume::GetLineSegments(const Ray &in_ray, std::vector<LineSegment>
         if(segments.empty()) return;
         current_ray = Ray(segments.back().End(), in_ray.Direction(), in_ray.POT(), false);
     }
-    spdlog::warn("PhysicalVolume::GetLineSegments: iteration limit reached in '{}'", m_name);
+    NuGeom::Log().warn("PhysicalVolume::GetLineSegments: iteration limit reached in '{}'", m_name);
 }
 
 NuGeom::Ray PhysicalVolume::TransformRay(const Ray &ray) const {

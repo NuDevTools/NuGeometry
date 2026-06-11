@@ -42,11 +42,11 @@
 #include "fmt/format.h"
 #include "geom/BoundingBox.hh"
 #include "geom/LineSegment.hh"
+#include "geom/Logging.hh"
 #include "geom/Parser.hh"
 #include "geom/Ray.hh"
 #include "geom/World.hh"
 #include "spdlog/sinks/stdout_color_sinks.h"
-#include "spdlog/spdlog.h"
 
 #include <algorithm>
 #include <cmath>

@@ -22,7 +22,22 @@ void CreateLogger(bool to_file, int level, int flush_time) {
     }
     logger->set_level(slevel);
     logger->flush_on(spdlog::level::warn);
+    spdlog::drop("nugeom"); // replace any previously registered instance
     spdlog::register_logger(logger);
     spdlog::set_default_logger(logger);
     spdlog::flush_every(std::chrono::seconds(flush_time));
+}
+
+spdlog::logger &NuGeom::Log() {
+    // Prefer whatever "nugeom" logger the host registered (driver, tests);
+    // looked up per call so re-registration (e.g. between tests) is honored.
+    if(auto registered = spdlog::get("nugeom")) return *registered;
+    // Otherwise clone the default logger's sinks/level/pattern once and keep
+    // that fallback alive even if the registry is later cleared.
+    static std::shared_ptr<spdlog::logger> fallback = []() {
+        auto created = spdlog::default_logger()->clone("nugeom");
+        spdlog::register_logger(created);
+        return created;
+    }();
+    return *fallback;
 }

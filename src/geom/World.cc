@@ -2,8 +2,8 @@
 #include "geom/BVH.hh"
 #include "geom/BoundingBox.hh"
 #include "geom/LineSegment.hh"
+#include "geom/Logging.hh"
 #include "geom/Ray.hh"
-#include "spdlog/spdlog.h"
 #include <limits>
 #include <map>
 #include <set>
@@ -121,7 +121,7 @@ std::vector<NuGeom::LineSegment> World::GetLineSegments(const Ray &ray) const {
     // Use the root PV's GetLineSegments which handles daughter traversal
     // and recursive unwinding via physical mothers.
     m_root_pv->GetLineSegments(ray, segments, {});
-    spdlog::trace("World: Line Segments found -> {}", fmt::join(segments, ", "));
+    NuGeom::Log().trace("World: Line Segments found -> {}", fmt::join(segments, ", "));
     return PruneSegments(std::move(segments));
 }
 
@@ -249,8 +249,8 @@ NuGeom::World::VoxelGrid World::Voxelize(int resolution) const {
                 grid.data[static_cast<size_t>(ix + grid.nx * (iy + grid.ny * iz))] = idx;
             }
 
-    spdlog::info("Voxelize: {}x{}x{} grid, {} materials", grid.nx, grid.ny, grid.nz,
-                 grid.materials.size());
+    NuGeom::Log().info("Voxelize: {}x{}x{} grid, {} materials", grid.nx, grid.ny, grid.nz,
+                       grid.materials.size());
     return grid;
 }
 

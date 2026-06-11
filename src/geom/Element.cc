@@ -1,6 +1,6 @@
 #include "geom/Element.hh"
+#include "geom/Logging.hh"
 #include "geom/Units.hh"
-#include "spdlog/spdlog.h"
 // #include "yaml-cpp/yaml.h"
 
 #include <cmath>
@@ -64,9 +64,10 @@ void Element::AddIsotope(const std::string &name, double fraction) {
     m_isotopes.push_back({Isotope(name), fraction});
     m_mass = 0;
     double frac_sum = 0;
-    spdlog::trace("Element: {}", m_name);
+    NuGeom::Log().trace("Element: {}", m_name);
     for(const auto &iso_frac : m_isotopes) {
-        spdlog::trace("Adding mass = {} with frac = {}", iso_frac.first.m_mass, iso_frac.second);
+        NuGeom::Log().trace("Adding mass = {} with frac = {}", iso_frac.first.m_mass,
+                            iso_frac.second);
         m_mass += iso_frac.first.m_mass * iso_frac.second;
         frac_sum += iso_frac.second;
     }

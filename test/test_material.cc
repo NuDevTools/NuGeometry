@@ -6,12 +6,16 @@
 
 #include <sstream>
 
-// Make logger send to stringstream
+// Make logger send to stringstream.  The NuGeometry library logs through the
+// scoped "nugeom" logger (NuGeom::Log(), resolved and cached on first use), so
+// the capture logger must be registered under that name before the first
+// library call that logs.
 static std::ostringstream test_logger() {
     std::ostringstream oss;
     auto oss_sink = std::make_shared<spdlog::sinks::ostream_sink_mt>(oss);
-    auto oss_logger = std::make_shared<spdlog::logger>("test_log", oss_sink);
+    auto oss_logger = std::make_shared<spdlog::logger>("nugeom", oss_sink);
     oss_logger->set_level(spdlog::level::debug);
+    spdlog::drop("nugeom"); // replace any previously registered instance
     spdlog::register_logger(oss_logger);
     spdlog::set_default_logger(oss_logger);
     return oss;
@@ -19,6 +23,8 @@ static std::ostringstream test_logger() {
 
 TEST_CASE("Material", "[Materials]") {
     SECTION("Making Material Works as expected") {
+        auto oss = test_logger();
+
         NuGeom::Material water("water", 1.0, 2);
         CHECK(water.Name() == "water");
         CHECK(water.NComponents() == 2);
@@ -51,7 +57,6 @@ TEST_CASE("Material", "[Materials]") {
         CHECK_THROWS_WITH(air.AddElement(NuGeom::Element("Dummy", 2, 2), 0.5),
                           Catch::Contains("Too many elements added"));
 
-        auto oss = test_logger();
         NuGeom::Material dummy("dummy", 1, 2);
         dummy.AddElement(NuGeom::Element("Nitrogen"), 0.7);
         dummy.AddElement(NuGeom::Element("Oxygen"), 0.7);

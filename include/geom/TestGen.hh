@@ -1,11 +1,11 @@
 #pragma once
 
 #include "geom/Element.hh"
+#include "geom/Logging.hh"
 #include "geom/Material.hh"
 #include "geom/Random.hh"
 #include "geom/Ray.hh"
 #include "geom/Vector3D.hh"
-#include "spdlog/spdlog.h"
 #include <cmath>
 #include <cstdlib>
 #include <ctime>
@@ -135,7 +135,7 @@ class TestEventGen {
         static std::set<size_t> invalid_elms;
         if(m_xsec.find(pdg) == m_xsec.end()) {
             if(invalid_elms.find(pdg) == invalid_elms.end()) {
-                spdlog::warn("Element {} has no entry, returning zero", pdg);
+                NuGeom::Log().warn("Element {} has no entry, returning zero", pdg);
                 invalid_elms.emplace(pdg);
             }
             return 0;

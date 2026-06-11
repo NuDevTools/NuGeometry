@@ -1,12 +1,12 @@
 #include "CLI/CLI.hpp"
 #include "geom/DetectorSim.hh"
+#include "geom/Logging.hh"
 #include "geom/Material.hh"
 #include "geom/TestGen.hh"
 #include "geom/Vector3D.hh"
 #include "geom/Volume.hh"
 #include "geom/World.hh"
 #include "spdlog/sinks/stdout_color_sinks.h"
-#include "spdlog/spdlog.h"
 #include <cstdlib>
 #include <ctime>
 #include <map>
@@ -90,7 +90,7 @@ int main(int argc, char **argv) {
         if(prob_sum > max_prob) { max_prob = prob_sum; }
     }
     sim.SetMaxProb(max_prob);
-    spdlog::info("Set max probability to {}", max_prob);
+    NuGeom::Log().info("Set max probability to {}", max_prob);
     std::ofstream hist;
     hist.open(outfile);
     // for rays const
@@ -112,7 +112,7 @@ int main(int argc, char **argv) {
                  << interaction_point.Z() << " " << interaction_material.Name() << "\n";
         } else {
             // No interaction occurred
-            spdlog::debug("No interaction occurred for this ray.");
+            NuGeom::Log().debug("No interaction occurred for this ray.");
         }
     }
     */
@@ -135,11 +135,11 @@ int main(int argc, char **argv) {
                  << interaction_point.Z() << " " << interaction_material.Name() << "\n";
         } else {
             // No interaction occurred
-            spdlog::debug("No interaction occurred for this ray.");
+            NuGeom::Log().debug("No interaction occurred for this ray.");
         }
     }
 
-    spdlog::info("Accumulated {} events with {} POT", ntest_hits, m_pot);
+    NuGeom::Log().info("Accumulated {} events with {} POT", ntest_hits, m_pot);
     hist.close();
 
     return 0;
