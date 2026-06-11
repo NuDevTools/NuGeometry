@@ -311,6 +311,31 @@ class Trapezoid : public Shape, RegistrableShape<Trapezoid> {
     double m_z, m_ax, m_bx, m_ay, m_by;
 };
 
+class EllipticalTube : public Shape, RegistrableShape<EllipticalTube> {
+  public:
+    /// Initialize an elliptical tube centered at the origin
+    ///@param dx: The semi-axis in x
+    ///@param dy: The semi-axis in y
+    ///@param dz: The half-length in z
+    ///@param rot: The rotation matrix
+    ///@param trans: The translation from the origin
+    EllipticalTube(double dx = 1, double dy = 1, double dz = 1,
+                   const Rotation3D &rotation = Rotation3D(),
+                   const Translation3D &translation = Translation3D())
+        : Shape(rotation, translation), m_dx{dx}, m_dy{dy}, m_dz{dz} {}
+
+    static std::string Name() { return "eltube"; }
+    static std::unique_ptr<Shape> Construct(const pugi::xml_node &node);
+
+    BoundingBox GetBoundingBox() const override;
+    double SignedDistance(const Vector3D &) const override;
+    double Volume() const override { return M_PI * m_dx * m_dy * 2.0 * m_dz; }
+
+  private:
+    std::pair<double, double> Intersect2Impl(const Ray &) const override;
+    double m_dx, m_dy, m_dz;
+};
+
 // TODO: Implement details
 /*
 class Cone : public Shape, RegistrableShape<Cone> {

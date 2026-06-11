@@ -444,6 +444,97 @@ std::pair<double, double> NuGeom::Cylinder::Intersect2Impl(const Ray &ray) const
     return {tmin, tmax};
 }
 
+// --- EllipticalTube ---
+
+std::unique_ptr<NuGeom::Shape> NuGeom::EllipticalTube::Construct(const pugi::xml_node &node) {
+    double dx = node.attribute("dx").as_double();
+    double dy = node.attribute("dy").as_double();
+    double dz = node.attribute("dz").as_double();
+
+    // Convert the units
+    std::string unit = node.attribute("lunit").value();
+    if(unit.empty()) unit = node.attribute("unit").value();
+    if(unit == "m") {
+        dx *= 100;
+        dy *= 100;
+        dz *= 100;
+    } else if(unit == "mm") {
+        dx /= 10;
+        dy /= 10;
+        dz /= 10;
+    }
+
+    return std::make_unique<NuGeom::EllipticalTube>(dx, dy, dz);
+}
+
+NuGeom::BoundingBox NuGeom::EllipticalTube::GetBoundingBox() const {
+    return {-Vector3D(m_dx, m_dy, m_dz), Vector3D(m_dx, m_dy, m_dz)};
+}
+
+double NuGeom::EllipticalTube::SignedDistance(const Vector3D &in_point) const {
+    auto point = TransformPoint(in_point);
+    // Elliptical distance in XY: (x/dx)^2 + (y/dy)^2 - 1
+    double ex = point.X() / m_dx;
+    double ey = point.Y() / m_dy;
+    double ellipse_dist = std::sqrt(ex * ex + ey * ey) - 1.0;
+    // Scale ellipse_dist to approximate world-space distance
+    double min_semi = std::min(m_dx, m_dy);
+    double d_ellipse = ellipse_dist * min_semi;
+    double d_z = std::abs(point.Z()) - m_dz;
+    // SDF for intersection of elliptical cross-section and z-slab
+    if(d_ellipse > 0 && d_z > 0) return std::sqrt(d_ellipse * d_ellipse + d_z * d_z);
+    return std::max(d_ellipse, d_z);
+}
+
+std::pair<double, double> NuGeom::EllipticalTube::Intersect2Impl(const Ray &ray) const {
+    static constexpr double inf = std::numeric_limits<double>::infinity();
+
+    // Elliptical cross-section: (x/dx)^2 + (y/dy)^2 = 1
+    // Substitute ray: P + t*D, solve for t
+    const double ox = ray.Origin().X() / m_dx;
+    const double oy = ray.Origin().Y() / m_dy;
+    const double dx = ray.Direction().X() / m_dx;
+    const double dy = ray.Direction().Y() / m_dy;
+
+    const double a = dx * dx + dy * dy;
+    const double b = 2 * (ox * dx + oy * dy);
+    const double c = ox * ox + oy * oy - 1.0;
+
+    double tc1, tc2;
+    if(a < 1e-12) {
+        if(c > 0) return {inf, inf};
+        tc1 = -inf;
+        tc2 = inf;
+    } else {
+        const double det = b * b - 4 * a * c;
+        if(det < 0) return {inf, inf};
+        const double sq = std::sqrt(det);
+        const double r1 = 2 * c / (-b - sq);
+        const double r2 = 2 * c / (-b + sq);
+        tc1 = std::min(r1, r2);
+        tc2 = std::max(r1, r2);
+    }
+
+    // Z-slab [-m_dz, m_dz]
+    double tz1, tz2;
+    const double dz = ray.Direction().Z();
+    if(std::abs(dz) < 1e-12) {
+        if(ray.Origin().Z() < -m_dz || ray.Origin().Z() > m_dz) return {inf, inf};
+        tz1 = -inf;
+        tz2 = inf;
+    } else {
+        const double t0 = (-m_dz - ray.Origin().Z()) / dz;
+        const double t1 = (m_dz - ray.Origin().Z()) / dz;
+        tz1 = std::min(t0, t1);
+        tz2 = std::max(t0, t1);
+    }
+
+    const double tmin = std::max(tc1, tz1);
+    const double tmax = std::min(tc2, tz2);
+    if(tmin > tmax) return {inf, inf};
+    return {tmin, tmax};
+}
+
 NuGeom::Polyhedra::Polyhedra(double startphi, double deltaphi, size_t nsides,
                              const std::vector<zplane> &planes, const Rotation3D &rotation,
                              const Translation3D &translation)
