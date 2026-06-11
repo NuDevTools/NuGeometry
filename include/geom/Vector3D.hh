@@ -97,11 +97,14 @@ static constexpr Vector3D UnitZ = Vector3D(0, 0, 1);
 
 } // namespace NuGeom
 
-template <> struct fmt::formatter<NuGeom::Vector3D> : fmt::range_formatter<double, char> {
-    formatter() { this->set_brackets("Vector3D(", ")"); }
+// A plain literal formatter (constexpr parse, no data members) so fmt v12's
+// compile-time format-string checking can instantiate it; deriving from
+// range_formatter made this a non-literal type and broke that check.
+template <> struct fmt::formatter<NuGeom::Vector3D> {
+    constexpr auto parse(fmt::format_parse_context &ctx) { return ctx.begin(); }
 
     template <typename FormatContext>
     auto format(const NuGeom::Vector3D &v, FormatContext &ctx) const {
-        return fmt::range_formatter<double, char>::format(v.data(), ctx);
+        return fmt::format_to(ctx.out(), "Vector3D({}, {}, {})", v.X(), v.Y(), v.Z());
     }
 };

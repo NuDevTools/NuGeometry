@@ -416,8 +416,9 @@ template <> struct fmt::formatter<NuGeom::FourVector> {
         -> format_context::iterator {
         // ctx.out() is an output iterator to write to
         return format_to(ctx.out(),
-                         presentation == 'f' ? "FourVector({:.8f}, {:.8f}, {:.8f}, {:.8f})"
-                                             : "FourVector({:.8e}, {:.8e}, {:.8e}, {:.8e})",
+                         fmt::runtime(presentation == 'f'
+                                          ? "FourVector({:.8f}, {:.8f}, {:.8f}, {:.8f})"
+                                          : "FourVector({:.8e}, {:.8e}, {:.8e}, {:.8e})"),
                          p.E(), p.Px(), p.Py(), p.Pz());
     }
 };

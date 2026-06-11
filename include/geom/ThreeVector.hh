@@ -357,8 +357,8 @@ template <> struct fmt::formatter<NuGeom::ThreeVector> {
         -> format_context::iterator {
         // ctx.out() is an output iterator to write to
         return format_to(ctx.out(),
-                         presentation == 'f' ? "ThreeVector({:.8f}, {:.8f}, {:.8f})"
-                                             : "ThreeVector({:.8e}, {:.8e}, {:.8e})",
+                         fmt::runtime(presentation == 'f' ? "ThreeVector({:.8f}, {:.8f}, {:.8f})"
+                                                          : "ThreeVector({:.8e}, {:.8e}, {:.8e})"),
                          p.Px(), p.Py(), p.Pz());
     }
 };
