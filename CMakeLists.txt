@@ -97,6 +97,9 @@ endif()
 # Main code
 add_subdirectory(src)
 
+# Optional generator adapters (Achilles, ...)
+add_subdirectory(adapters/achilles)
+
 # Install CMake find_package files
 include(CMakePackageConfigHelpers)
 

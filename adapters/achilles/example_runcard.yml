@@ -1,0 +1,83 @@
+# Example geometry run card for achilles_geom_driver:
+#
+#   achilles_geom_driver example_runcard.yml [--verbosity debug]
+#
+# The Driver section configures NuGeometry (geometry, flux streaming, run
+# length); the Achilles section is the regular Achilles run card, forwarded
+# verbatim (!include tags resolve against Achilles' data/ search path, so run
+# from a directory where they resolve, e.g. the Achilles build dir).
+Driver:
+  Geometry: nd_hall_with_lar_tms_nosand.gdml
+  Rays:
+    File: flux.csv          # NuHepMC (.hepmc/.hepmc3) or CSV (pid,wgt,E,px,py,pz,x,y,z)
+    Loop: true              # rewind at end-of-file instead of erroring out
+    # DetectorOffset: [0, 0, 0]   # cm; overrides the file's beam->detector translation
+  Output: achilles_geom.hepmc
+  Mode: envelope            # envelope (max-weight layer 1, single shot)
+                            # or total (sigma_tot layer 1, retry until emit)
+  AutoEnergyRange: true     # widen the Achilles Beam/EnergyRange to cover the
+                            # streamed ray energies (default true); false keeps
+                            # the run card's range as an energy cut
+  InitRays: 1000            # rays used to calibrate max_prob
+  SafetyFactor: 1.5
+  Verbosity: info           # trace|debug|info|warn|error|off (CLI --verbosity overrides)
+  Run:                      # exactly one of:
+    Events: 1000            #   stop after N accepted events
+    # POT: 1.0e17           #   stop once the accumulated POT is reached
+
+Achilles:
+  Main:
+    NEvents: 10000        # unused in geometry mode (NuGeometry drives the loop)
+    HardCuts: false
+    EventCuts: false
+    DoRotate: false
+    RunDecays: False
+    Output:
+        Format: NuHepMC   # geometry mode hands events to NuGeometry; this writer is idle
+        Name: achilles_geom_internal.hepmc
+        Zipped: True
+
+  SherpaOptions: !include "data/default/SherpaOptions.yml"
+
+  Processes:
+    - Leptons: [14, [13]]   # numu CC -> muon
+
+  Beam:
+    Type: Geometry
+    EnergyRange: [100, 10000]   # MeV; widened automatically to cover the streamed
+                                # ray energies unless Driver/AutoEnergyRange: false
+                                # (may be omitted: then set from the flux directly)
+    Species: [14]
+
+  Cascade:
+    Run: True
+    Interactions: !include "data/default/VirtResInteractions.yml"
+    Step: 0.04
+    Probability: Cylinder
+    InMedium: None
+    PotentialProp: False
+    Algorithm: Base
+
+  NuclearModels:
+  - NuclearModel:
+     Model: QESpectral
+     ConfigFile: data/info_C12_pke.data
+     SpectralP: data/Spectral_Functions/pke12p_tot.data
+     SpectralN: data/Spectral_Functions/pke12n_tot.data
+     FormFactorFile: "FormFactors.yml"
+     Ward: None
+  - NuclearModel:
+     Model: FortranModel
+     Name: RES_Spectral_Func
+     ConfigFile: data/info_C12_pke.data
+     FormFactorFile: "FormFactors.yml"
+     Ward: None
+
+  Nuclei:
+    - Nucleus: !include "data/default/12C.yml"
+
+  Options: !include "data/default/OptionDefaults.yml"
+
+  Backend:
+    Name: Default
+    Options: []
