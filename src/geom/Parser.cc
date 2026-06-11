@@ -1,14 +1,30 @@
 #include "geom/Parser.hh"
-#include "spdlog/spdlog.h"
+#include "geom/Logging.hh"
 #include <cmath>
 #include <cstring>
 
 using NuGeom::GDMLParser;
 
+/// Build a context string for error messages from an XML node.
+/// Includes the node's XPath-like path, its "name" attribute if present,
+/// and the byte offset in the source file.
+static std::string NodeContext(const pugi::xml_node &node) {
+    std::string ctx;
+    ctx += "at <" + std::string(node.name()) + ">";
+    auto name_attr = node.attribute("name");
+    if(name_attr) ctx += " name=\"" + std::string(name_attr.value()) + "\"";
+    auto ref_attr = node.attribute("ref");
+    if(ref_attr) ctx += " ref=\"" + std::string(ref_attr.value()) + "\"";
+    ctx += " (path: " + node.path() + ", offset: " + std::to_string(node.offset_debug()) + ")";
+    return ctx;
+}
+
 GDMLParser::GDMLParser(const std::string &filename) {
     pugi::xml_document doc;
     pugi::xml_parse_result result = doc.load_file(filename.c_str());
-    if(!result) throw std::runtime_error("GDMLParser: Invalid geometry file");
+    if(!result)
+        throw std::runtime_error(fmt::format("GDMLParser: Failed to load '{}': {} (at offset {})",
+                                             filename, result.description(), result.offset));
 
     *this = GDMLParser(doc);
 }
@@ -23,13 +39,13 @@ GDMLParser::GDMLParser(const pugi::xml_document &doc) {
     auto setup = root.child("setup");
     m_world = World(m_volumes[setup.child("world").attribute("ref").value()]);
 
-    spdlog::info("Number of constants defined: {}", m_def_constants.size());
-    spdlog::info("Number of positions defined: {}", m_def_positions.size());
-    spdlog::info("Number of rotations defined: {}", m_def_rotations.size());
-    spdlog::info("Number of materials: {}", m_materials.size());
-    spdlog::info("Number of solids: {}", m_shapes.size());
-    spdlog::info("Number of volumes: {}", m_volumes.size());
-    spdlog::info("Number of physical volumes: {}", m_phys_vols.size());
+    NuGeom::Log().info("Number of constants defined: {}", m_def_constants.size());
+    NuGeom::Log().info("Number of positions defined: {}", m_def_positions.size());
+    NuGeom::Log().info("Number of rotations defined: {}", m_def_rotations.size());
+    NuGeom::Log().info("Number of materials: {}", m_materials.size());
+    NuGeom::Log().info("Number of solids: {}", m_shapes.size());
+    NuGeom::Log().info("Number of volumes: {}", m_volumes.size());
+    NuGeom::Log().info("Number of physical volumes: {}", m_phys_vols.size());
 }
 
 double GDMLParser::GetConstant(const std::string &name) const {
@@ -90,14 +106,16 @@ void GDMLParser::ParseDefines(const pugi::xml_node &define) {
 
         // Convert the units
         std::string unit = node.attribute("unit").value();
-        if(unit == "m") {
+        if(unit.empty()) {
+            NuGeom::Log().warn("GDMLParser: No unit specified for position '{}', assuming cm {}",
+                               name, NodeContext(node));
+        } else if(unit == "m") {
             position *= 100;
         } else if(unit == "mm") {
             position /= 10;
         } else if(unit != "cm") {
-            std::cout << name << std::endl;
             throw std::runtime_error(
-                fmt::format("GDMLParser: Invalid position unit found ({})", unit));
+                fmt::format("GDMLParser: Invalid position unit '{}' {}", unit, NodeContext(node)));
         }
         m_def_positions[name] = position;
     }
@@ -112,14 +130,17 @@ void GDMLParser::ParseDefines(const pugi::xml_node &define) {
 
         // Convert if needed
         double convert{};
-        if(unit == "deg" || unit == "degree")
+        if(unit.empty()) {
+            NuGeom::Log().warn("GDMLParser: No unit specified for rotation '{}', assuming deg {}",
+                               name, NodeContext(node));
+            convert = M_PI / 180;
+        } else if(unit == "deg" || unit == "degree")
             convert = M_PI / 180;
         else if(unit == "rad")
             convert = 1;
         else {
-            std::cout << name << std::endl;
             throw std::runtime_error(
-                fmt::format("GDMLParser: Invalid angle unit found ({})", unit));
+                fmt::format("GDMLParser: Invalid angle unit '{}' {}", unit, NodeContext(node)));
         }
         auto rotX = RotationX3D(xRot * convert);
         auto rotY = RotationY3D(yRot * convert);
@@ -154,14 +175,15 @@ void GDMLParser::ParseMaterials(const pugi::xml_node &materials) {
                                isotope.attribute("n").as_double());
             }
         } else {
-            throw std::runtime_error("Element: Invalid format");
+            throw std::runtime_error(
+                fmt::format("GDMLParser: Invalid element format {}", NodeContext(node)));
         }
     }
 
     // Parse all materials
     for(const auto &node : materials.children("material")) {
         std::string name = node.attribute("name").value();
-        spdlog::debug("Parsing material {}", name);
+        NuGeom::Log().debug("Parsing material {}", name);
         double density = node.child("D").attribute("value").as_double();
         std::string unit = "g/cm3";
         if(node.child("D").attribute("unit")) unit = node.child("D").attribute("unit").value();
@@ -192,8 +214,9 @@ void GDMLParser::ParseMaterials(const pugi::xml_node &materials) {
                 auto natoms = element.attribute("n").as_double();
                 // TODO: Allow other materials to be added to a new material
                 if(m_materials.find(element.attribute("ref").as_string()) != m_materials.end()) {
-                    throw std::runtime_error(
-                        "GDMLParser: Using composite materials requires mass fractions");
+                    throw std::runtime_error(fmt::format(
+                        "GDMLParser: Using composite materials requires mass fractions {}",
+                        NodeContext(node)));
                 } else {
                     Element elm(element.attribute("ref").as_string());
                     if(natoms < 1) {
@@ -205,7 +228,9 @@ void GDMLParser::ParseMaterials(const pugi::xml_node &materials) {
             }
             m_materials[name] = material;
         } else {
-            throw std::runtime_error("GDMLParser: Invalid material");
+            throw std::runtime_error(
+                fmt::format("GDMLParser: Invalid material (no fraction or composite children) {}",
+                            NodeContext(node)));
         }
     }
 }
@@ -263,7 +288,7 @@ ParseCSGTransform(const pugi::xml_node &solid,
 void GDMLParser::ParseSolids(const pugi::xml_node &solids) {
     for(const auto &solid : solids) {
         std::string name = solid.attribute("name").value();
-        spdlog::debug("Parsing solid {} of type {}", name, solid.name());
+        NuGeom::Log().debug("Parsing solid {} of type {}", name, solid.name());
         if(std::strcmp(solid.name(), "subtraction") == 0 ||
            std::strcmp(solid.name(), "union") == 0 ||
            std::strcmp(solid.name(), "intersection") == 0) {
@@ -352,7 +377,8 @@ void GDMLParser::ParseStructure(const pugi::xml_node &structure) {
                 if(unit == "deg" || unit == "degree")
                     convert = M_PI / 180;
                 else if(unit != "rad" && !unit.empty())
-                    throw std::runtime_error("GDMLParser: Invalid angle unit: " + unit);
+                    throw std::runtime_error(fmt::format("GDMLParser: Invalid angle unit '{}' {}",
+                                                         unit, NodeContext(subnode)));
                 auto rotX = RotationX3D(xRot * convert);
                 auto rotY = RotationY3D(yRot * convert);
                 auto rotZ = RotationZ3D(zRot * convert);
@@ -366,8 +392,8 @@ void GDMLParser::ParseStructure(const pugi::xml_node &structure) {
             volume->AddDaughter(m_phys_vols.back());
         }
 
-        spdlog::info("Volume: {}", name);
-        // spdlog::info("  Mass = {}", volume->Mass());
+        NuGeom::Log().info("Volume: {}", name);
+        // NuGeom::Log().info("  Mass = {}", volume->Mass());
         //  Store volume information
         m_volumes[name] = volume;
     }

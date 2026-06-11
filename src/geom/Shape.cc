@@ -531,7 +531,9 @@ std::unique_ptr<NuGeom::Shape> NuGeom::Polyhedra::Construct(const pugi::xml_node
     } else if(unit == "mm") {
         lconversion = 0.1;
     } else if(unit != "cm") {
-        throw std::runtime_error(fmt::format("Invalid lunit {} found", unit));
+        throw std::runtime_error(fmt::format("Invalid lunit '{}' in <{}> name='{}' (offset: {})",
+                                             unit, node.name(), node.attribute("name").value(),
+                                             node.offset_debug()));
     }
 
     // Convert the angles
@@ -542,7 +544,9 @@ std::unique_ptr<NuGeom::Shape> NuGeom::Polyhedra::Construct(const pugi::xml_node
     } else if(angle == "rad" || angle == "radian") {
         aconversion = 1;
     } else {
-        throw std::runtime_error(fmt::format("Invalid aunit {} found", unit));
+        throw std::runtime_error(fmt::format("Invalid aunit '{}' in <{}> name='{}' (offset: {})",
+                                             unit, node.name(), node.attribute("name").value(),
+                                             node.offset_debug()));
     }
 
     // Load the polyhedra parameters
@@ -653,7 +657,9 @@ std::unique_ptr<NuGeom::Shape> NuGeom::Trapezoid::Construct(const pugi::xml_node
     } else if(unit == "mm") {
         lconversion = 0.1;
     } else if(unit != "cm") {
-        throw std::runtime_error(fmt::format("Invalid lunit {} found", unit));
+        throw std::runtime_error(fmt::format("Invalid lunit '{}' in <{}> name='{}' (offset: {})",
+                                             unit, node.name(), node.attribute("name").value(),
+                                             node.offset_debug()));
     }
 
     // Load the trapezoid parameters

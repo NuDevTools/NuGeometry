@@ -4,16 +4,15 @@
 #include "geom/Transform3D.hh"
 #include "geom/Vector3D.hh"
 
+#include "fmt/format.h"
+#include "pugixml.hpp"
+
 #include <cmath>
 #include <functional>
 #include <iostream>
 #include <map>
 #include <memory>
 #include <utility>
-
-namespace pugi {
-class xml_node;
-}
 
 namespace NuGeom {
 
@@ -83,8 +82,14 @@ class ShapeFactory {
 
   public:
     static std::unique_ptr<Shape> Initialize(const std::string &name, const pugi::xml_node &node) {
-        auto constructor = Registry().at(name);
-        return constructor(node);
+        auto it = Registry().find(name);
+        if(it == Registry().end()) {
+            std::string solid_name = node.attribute("name").value();
+            throw std::runtime_error(
+                fmt::format("ShapeFactory: Unknown solid type '{}' for solid '{}' (offset: {})",
+                            name, solid_name, node.offset_debug()));
+        }
+        return it->second(node);
     }
 
     // TODO: Switch to using a logger!
