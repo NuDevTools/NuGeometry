@@ -17,6 +17,7 @@ add_library(geom SHARED
     Volume.cc
     DetectorSim.cc
     HepMCFluxReader.cc
+    FluxStreamer.cc
 )
 target_link_libraries(geom PRIVATE project_options project_warnings
                            PUBLIC geom_utils yaml::cpp pugixml::pugixml
