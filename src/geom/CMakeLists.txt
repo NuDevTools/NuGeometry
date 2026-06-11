@@ -16,6 +16,7 @@ add_library(geom SHARED
     Parser.cc
     Volume.cc
     DetectorSim.cc
+    HepMCFluxReader.cc
 )
 target_link_libraries(geom PRIVATE project_options project_warnings
                            PUBLIC geom_utils yaml::cpp pugixml::pugixml
