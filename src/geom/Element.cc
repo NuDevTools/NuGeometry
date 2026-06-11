@@ -31,7 +31,7 @@ Element::Element(const std::string &name) {
 Element::Element(const std::string &name, size_t Z, double mass, size_t A)
     : m_name{name}, m_Z{Z}, m_mass{mass} {
     if(A == 0) {
-        m_A = static_cast<size_t>(mass);
+        m_A = static_cast<size_t>(std::round(mass));
     } else {
         m_A = A;
     }
@@ -44,7 +44,7 @@ Element::Element(const std::string &name, const std::string &symbol, size_t Z, d
     : m_name{name}, m_symbol{symbol}, m_Z{Z}, m_mass{mass} {
     if(A == 0) {
         // Look up from the name.
-        m_A = static_cast<size_t>(mass);
+        m_A = static_cast<size_t>(std::round(mass));
     } else {
         m_A = A;
     }
