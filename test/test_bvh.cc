@@ -523,6 +523,52 @@ TEST_CASE("GetLineSegments: translated daughter returns correct material and len
     CHECK_THAT(segs[2].End().Z(), Catch::WithinAbs(5.0, 1e-4));
 }
 
+TEST_CASE("GetLineSegments: ray origin outside world box enters and traverses", "[BVH]") {
+    // Same geometry as the translated-daughter test, but the ray ORIGIN sits
+    // far outside the world box (as for dk2nu flux rays whose decay vertex is
+    // tens of thousands of cm upstream).  The traversal must enter the world
+    // and produce the full Rock|Water|Rock chain, not stop at the box surface.
+    auto rock = make_named_mat("Rock");
+    auto water = make_named_mat("Water");
+
+    auto child_shape = std::make_shared<NuGeom::Box>(NuGeom::Vector3D{2, 2, 2});
+    auto child_lv = std::make_shared<NuGeom::LogicalVolume>(water, child_shape);
+    NuGeom::Translation3D child_trans(0, 0, 3);
+    auto child_pv =
+        std::make_shared<NuGeom::PhysicalVolume>(child_lv, child_trans, NuGeom::Transform3D{});
+
+    auto world_shape = std::make_shared<NuGeom::Box>(NuGeom::Vector3D{10, 10, 10});
+    auto world_lv = std::make_shared<NuGeom::LogicalVolume>(rock, world_shape);
+    world_lv->AddDaughter(child_pv);
+
+    NuGeom::World world(world_lv);
+    // Origin at z=-1005, i.e. 1000 units upstream of the world's -z face (z=-5).
+    NuGeom::Ray ray{{0, 0, -1005}, {0, 0, 1}, 1.0};
+    auto segs = world.GetLineSegments(ray);
+
+    REQUIRE(segs.size() == 3);
+    CHECK(segs[0].GetMaterial().Name() == "Rock");
+    CHECK(segs[1].GetMaterial().Name() == "Water");
+    CHECK(segs[2].GetMaterial().Name() == "Rock");
+    // No spurious segment for the empty exterior; traversal begins at the box.
+    CHECK_THAT(segs[0].Start().Z(), Catch::WithinAbs(-5.0, 1e-4));
+    CHECK_THAT(segs[1].Length(), Catch::WithinAbs(2.0, 1e-4));
+    CHECK_THAT(segs[2].End().Z(), Catch::WithinAbs(5.0, 1e-4));
+}
+
+TEST_CASE("GetLineSegments: ray origin outside world, pointing away, returns nothing", "[BVH]") {
+    // Origin outside the world box and direction pointing further away: the ray
+    // never enters, so there must be no segments (and no infinite/garbage one).
+    auto rock = make_named_mat("Rock");
+    auto world_shape = std::make_shared<NuGeom::Box>(NuGeom::Vector3D{10, 10, 10});
+    auto world_lv = std::make_shared<NuGeom::LogicalVolume>(rock, world_shape);
+
+    NuGeom::World world(world_lv);
+    NuGeom::Ray ray{{0, 0, -1005}, {0, 0, -1}, 1.0}; // heading to -z, away from box
+    auto segs = world.GetLineSegments(ray);
+    CHECK(segs.empty());
+}
+
 TEST_CASE("GetLineSegments: 3-level hierarchy with large translation (from_global regression)",
           "[BVH]") {
     // World:  200x200x200 Rock     (z in [-100, 100])

@@ -203,6 +203,24 @@ void PhysicalVolume::GetLineSegments(const Ray &in_ray, std::vector<LineSegment>
     // from_global for daughters: world → this PV's local frame.
     const auto daughter_fg = from_global * m_transform;
 
+    // If the ray starts OUTSIDE this volume, advance it to the entry face first.
+    // The loop below assumes an interior origin (so Shape::Intersect returns the
+    // exit time); with an exterior origin Shape::Intersect returns the *entry*
+    // time instead, which made the traversal emit a single segment that stops at
+    // the box surface and return.  This happens for flux rays whose decay-vertex
+    // origin sits far upstream of the world box.  The exterior region carries no
+    // material, so we emit nothing for it — we just step the ray onto the volume.
+    {
+        auto entry_ray = TransformRay(Transform3D::ApplyRayDirect(current_ray, from_global));
+        if(m_volume->GetShape()->SignedDistance(entry_ray.Origin()) > 0) {
+            const auto [t_in, t_out] = m_volume->GetShape()->Intersect2(entry_ray);
+            if(!(std::isfinite(t_in) && t_in > 0 && t_out > t_in))
+                return; // ray never enters this volume
+            current_ray =
+                Ray(current_ray.Propagate(t_in + eps), in_ray.Direction(), in_ray.POT(), false);
+        }
+    }
+
     for(size_t iter = 0; iter < kMaxIter; ++iter) {
         auto local_ray = Transform3D::ApplyRayDirect(current_ray, from_global);
         auto ray = TransformRay(local_ray);
