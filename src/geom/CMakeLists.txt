@@ -18,7 +18,8 @@ add_library(geom SHARED
     DetectorSim.cc
 )
 target_link_libraries(geom PRIVATE project_options project_warnings
-                           PUBLIC geom_utils yaml::cpp pugixml::pugixml)
+                           PUBLIC geom_utils yaml::cpp pugixml::pugixml
+                                  NuHepMC::CPPUtils)
 
 add_executable(geom_test
     main.cc

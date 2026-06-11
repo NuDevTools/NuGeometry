@@ -1,13 +1,14 @@
 #include "CLI/CLI.hpp"
 #include "geom/DetectorSim.hh"
+#include "geom/Logging.hh"
 #include "geom/Material.hh"
+#include "geom/MockGenerator.hh"
 #include "geom/Parser.hh"
 #include "geom/TestGen.hh"
 #include "geom/Vector3D.hh"
 #include "geom/Volume.hh"
 #include "geom/World.hh"
 #include "spdlog/sinks/stdout_color_sinks.h"
-#include "spdlog/spdlog.h"
 #include <cstdlib>
 #include <ctime>
 #include <map>
@@ -62,7 +63,7 @@ int main(int argc, char **argv) {
     auto world = parse.GetWorld();
     auto box = world.GetWorldBox();
 
-    spdlog::info("BoundingBox: min = {}, max = {}", box.min, box.max);
+    NuGeom::Log().info("BoundingBox: min = {}, max = {}", box.min, box.max);
 
     // Locate the LAr detector to centre the beam on it.
     // volArgonCubeDetector_pos is relative to its immediate parent (volDetEnclosure), not the
@@ -74,38 +75,49 @@ int main(int argc, char **argv) {
             lar_world_center = lar_world_center + parse.GetPosition(name);
         // Add the LAr's own position within its immediate parent
         lar_world_center = lar_world_center + parse.GetPosition(lar_pos);
-        spdlog::info("LAr world-frame centre: ({:.1f}, {:.1f}, {:.1f}) cm", lar_world_center.X(),
-                     lar_world_center.Y(), lar_world_center.Z());
+        NuGeom::Log().info("LAr world-frame centre: ({:.1f}, {:.1f}, {:.1f}) cm",
+                           lar_world_center.X(), lar_world_center.Y(), lar_world_center.Z());
     } catch(const std::exception &e) {
-        spdlog::warn("Could not locate LAr position ({}); beam centre set to world origin",
-                     e.what());
+        NuGeom::Log().warn("Could not locate LAr position ({}); beam centre set to world origin",
+                           e.what());
     }
 
     NuGeom::Vector3D beam_center{lar_world_center.X(), lar_world_center.Y(), box.min.Z()};
-    spdlog::info("Beam: centre=({:.1f},{:.1f}) cm  radius={:.1f} cm  sigma_theta={:.4f} rad",
-                 beam_center.X(), beam_center.Y(), beam_radius, sigma_theta);
+    NuGeom::Log().info("Beam: centre=({:.1f},{:.1f}) cm  radius={:.1f} cm  sigma_theta={:.4f} rad",
+                       beam_center.X(), beam_center.Y(), beam_radius, sigma_theta);
 
     // Setup DetectorSim
     NuGeom::DetectorSim sim;
     sim.Setup(world);
     sim.SetEventFile(outfile);
 
-    // Set callbacks and initialize the interaction placement (i.e. find max probability)
-    // auto raygen = std::make_shared<BeamRayGen>(0, 10, beam_center, beam_radius, sigma_theta,
-    //                                            box.min.Z());
+    // Flux: file-driven rays wrapped as FluxSamples.
     auto raygen = std::make_shared<FileRayGen>(0, 10, "rays.log");
-    auto callback = [&]() { return raygen->GetRay(); };
-    sim.SetRayGenCallback(callback);
+    sim.SetFluxCallback([&]() {
+        auto [energy, ray] = raygen->GetRay();
+        NuGeom::FluxSample fs;
+        fs.energy = energy;
+        fs.pdg = 14; // nu_mu placeholder
+        fs.ray = ray;
+        fs.flux_weight = 1.0;
+        return fs;
+    });
 
+    // Generator: TestEventGen xsec wrapped behind the GeneratorInterface.
     // TODO: Fix issue with elements in GDML to PDG
     std::map<size_t, double> xsec_map = {
         {1000010010, 1e-38}, {1000080160, 1e-38}, {1000180400, 1e-38}, {1000180390, 1e-38}};
     auto event_gen = std::make_shared<TestEventGen>(xsec_map);
-    sim.SetGeneratorCallback(
-        [&](double energy, size_t pdg) { return event_gen->CrossSection(energy, pdg); });
+    auto mock = std::make_shared<NuGeom::MockGenerator>(
+        [event_gen](double energy, int /*nu_pdg*/, int target_pdg) {
+            // MockGenerator has no partial unweighter, so envelope ==
+            // sigma_tot is the natural choice.
+            return event_gen->CrossSection(energy, static_cast<size_t>(target_pdg));
+        });
+    sim.SetGenerator(mock);
+
     size_t ntrials = 1 << 22;
     sim.Init(ntrials);
-    // sim.GenerateEvents(nevents);
     sim.GenerateEvents(pot);
 
     return 0;
