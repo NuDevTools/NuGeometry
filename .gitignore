@@ -6,3 +6,7 @@ include/geom/System.hh
 *.so
 *.ipynb*
 .vscode
+*.root
+*.png
+build*
+*.pdf
