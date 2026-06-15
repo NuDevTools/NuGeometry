@@ -25,6 +25,11 @@ class BVH {
     /// Returns true and sets time / vol if a hit is found.
     bool Traverse(const Ray &ray, double &time, std::shared_ptr<PhysicalVolume> &vol) const;
 
+    /// Raw-pointer overload for the hot geometry-traversal path: avoids the
+    /// shared_ptr refcount churn of the owning-pointer version.  The returned
+    /// pointer is non-owning and valid as long as the daughter list outlives it.
+    bool Traverse(const Ray &ray, double &time, PhysicalVolume *&vol) const;
+
     bool IsBuilt() const { return !m_nodes.empty(); }
 
   private:
@@ -41,10 +46,15 @@ class BVH {
     /// Returns the index of the newly created node.
     size_t BuildNode(std::vector<std::pair<BoundingBox, size_t>> &leaves, size_t start, size_t end);
 
-    void TraverseNode(size_t idx, const Ray &ray, double &best_time, size_t &best_pv_idx) const;
+    /// Shared traversal core: returns the index of the nearest hit daughter
+    /// (kInvalid on a miss) and writes its entry time to `time`.
+    size_t TraverseIndex(const Ray &ray, double &time) const;
 
     std::vector<Node> m_nodes;
     const std::vector<std::shared_ptr<PhysicalVolume>> *m_daughters = nullptr;
+    // Cached non-owning daughter pointers, parallel to *m_daughters, so leaf
+    // intersection and result lookup skip the shared_ptr indirection/refcount.
+    std::vector<PhysicalVolume *> m_daughter_ptrs;
 };
 
 } // namespace NuGeom

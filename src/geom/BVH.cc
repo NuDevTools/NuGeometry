@@ -3,6 +3,7 @@
 #include "geom/Volume.hh"
 
 #include <algorithm>
+#include <array>
 #include <limits>
 
 using NuGeom::BoundingBox;
@@ -21,6 +22,11 @@ void BVH::Build(const std::vector<std::shared_ptr<NuGeom::PhysicalVolume>> &daug
 
     m_nodes.reserve(2 * daughters.size());
     BuildNode(leaves, 0, leaves.size());
+
+    // Cache non-owning pointers parallel to the daughter list.
+    m_daughter_ptrs.clear();
+    m_daughter_ptrs.reserve(daughters.size());
+    for(const auto &d : daughters) m_daughter_ptrs.push_back(d.get());
 }
 
 size_t BVH::BuildNode(std::vector<std::pair<BoundingBox, size_t>> &leaves, size_t start,
@@ -67,64 +73,76 @@ size_t BVH::BuildNode(std::vector<std::pair<BoundingBox, size_t>> &leaves, size_
     return node_idx;
 }
 
+size_t BVH::TraverseIndex(const NuGeom::Ray &ray, double &time) const {
+    if(m_nodes.empty()) return kInvalid;
+
+    constexpr double inf = std::numeric_limits<double>::infinity();
+    double best_time = inf;
+    size_t best_idx = kInvalid;
+
+    // Raw pointers to skip the vector's bounds-checked operator[] in the loop.
+    const Node *const nodes = m_nodes.data();
+    PhysicalVolume *const *const dptrs = m_daughter_ptrs.data();
+
+    // Iterative depth-first traversal.  Each node's AABB is tested exactly
+    // once (when pushed); the entry time orders the children so the nearer
+    // subtree is visited first.  The median-split tree is balanced, so the
+    // stack depth is bounded by ~log2(n)+1; 64 covers any realistic geometry.
+    struct StackEntry {
+        size_t node;
+        double t_entry;
+    };
+    std::array<StackEntry, 64> stack;
+    size_t sp = 0;
+
+    if(std::isfinite(nodes[0].bbox.IntersectT(ray, 0.0, best_time))) stack[sp++] = {0, 0.0};
+
+    while(sp > 0) {
+        const StackEntry entry = stack[--sp];
+        // A closer hit may have been found since this subtree was pushed.
+        if(entry.t_entry >= best_time) continue;
+        const Node &node = nodes[entry.node];
+
+        if(node.pv_idx != kInvalid) {
+            // Leaf: exact shape intersection.
+            const double t = dptrs[node.pv_idx]->Intersect(ray);
+            if(t < best_time) {
+                best_time = t;
+                best_idx = node.pv_idx;
+            }
+            continue;
+        }
+
+        double t_left = inf, t_right = inf;
+        if(node.left != kInvalid) t_left = nodes[node.left].bbox.IntersectT(ray, 0.0, best_time);
+        if(node.right != kInvalid) t_right = nodes[node.right].bbox.IntersectT(ray, 0.0, best_time);
+
+        // Push the farther child first so the nearer one is popped first.
+        const bool left_first = t_left <= t_right;
+        const size_t far_node = left_first ? node.right : node.left;
+        const double far_t = left_first ? t_right : t_left;
+        const size_t near_node = left_first ? node.left : node.right;
+        const double near_t = left_first ? t_left : t_right;
+        if(std::isfinite(far_t)) stack[sp++] = {far_node, far_t};
+        if(std::isfinite(near_t)) stack[sp++] = {near_node, near_t};
+    }
+
+    if(best_idx == kInvalid) return kInvalid;
+    time = best_time;
+    return best_idx;
+}
+
 bool BVH::Traverse(const NuGeom::Ray &ray, double &time,
                    std::shared_ptr<NuGeom::PhysicalVolume> &vol) const {
-    if(m_nodes.empty()) return false;
-
-    double best_time = std::numeric_limits<double>::infinity();
-    size_t best_idx = kInvalid;
-    TraverseNode(0, ray, best_time, best_idx);
-
-    if(best_idx == kInvalid) return false;
-    time = best_time;
-    vol = (*m_daughters)[best_idx];
+    const size_t idx = TraverseIndex(ray, time);
+    if(idx == kInvalid) return false;
+    vol = (*m_daughters)[idx];
     return true;
 }
 
-void BVH::TraverseNode(size_t idx, const NuGeom::Ray &ray, double &best_time,
-                       size_t &best_pv_idx) const {
-    const Node &node = m_nodes[idx];
-
-    // Cull entire subtree if its AABB is missed or farther than current best.
-    if(!node.bbox.Intersect(ray, 0.0, best_time)) return;
-
-    if(node.pv_idx != kInvalid) {
-        // Leaf: exact shape intersection.
-        const double t = (*m_daughters)[node.pv_idx]->Intersect(ray);
-        if(t < best_time) {
-            best_time = t;
-            best_pv_idx = node.pv_idx;
-        }
-        return;
-    }
-
-    if(node.left != kInvalid && node.right != kInvalid) {
-        // Visit the nearer child first for better culling.
-        // Use the ray's origin position along the split axis as a heuristic:
-        // compare AABB min boundaries to decide order.
-        const auto &lbox = m_nodes[node.left].bbox;
-        const auto &rbox = m_nodes[node.right].bbox;
-        // Cheap heuristic: compare centroids along the ray direction.
-        // If the right centroid is closer along the dominant ray axis, swap.
-        double l_near = 0, r_near = 0;
-        for(size_t a = 0; a < 3; ++a) {
-            double inv_d = ray.InvDirection()[a];
-            if(std::isfinite(inv_d)) {
-                double lt = ((inv_d > 0 ? lbox.min[a] : lbox.max[a]) - ray.Origin()[a]) * inv_d;
-                double rt = ((inv_d > 0 ? rbox.min[a] : rbox.max[a]) - ray.Origin()[a]) * inv_d;
-                l_near = std::max(l_near, lt);
-                r_near = std::max(r_near, rt);
-            }
-        }
-        if(l_near <= r_near) {
-            TraverseNode(node.left, ray, best_time, best_pv_idx);
-            TraverseNode(node.right, ray, best_time, best_pv_idx);
-        } else {
-            TraverseNode(node.right, ray, best_time, best_pv_idx);
-            TraverseNode(node.left, ray, best_time, best_pv_idx);
-        }
-    } else {
-        if(node.left != kInvalid) TraverseNode(node.left, ray, best_time, best_pv_idx);
-        if(node.right != kInvalid) TraverseNode(node.right, ray, best_time, best_pv_idx);
-    }
+bool BVH::Traverse(const NuGeom::Ray &ray, double &time, NuGeom::PhysicalVolume *&vol) const {
+    const size_t idx = TraverseIndex(ray, time);
+    if(idx == kInvalid) return false;
+    vol = m_daughter_ptrs[idx];
+    return true;
 }
