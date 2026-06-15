@@ -21,7 +21,7 @@ class LogicalVolume {
     ~LogicalVolume();
 
     std::string Name() const { return m_name; }
-    Material GetMaterial() const { return m_material; }
+    const Material &GetMaterial() const { return m_material; }
     void GetMaterials(std::set<Material> &) const;
     Shape *GetShape() const { return m_shape.get(); }
     const std::vector<std::shared_ptr<PhysicalVolume>> &Daughters() const { return m_daughters; }
@@ -96,6 +96,7 @@ class PhysicalVolume {
     /// Returns the AABB of this volume in its parent's coordinate frame.
     BoundingBox GetParentBoundingBox() const;
     bool RayTrace(const Ray &ray, double &time, std::shared_ptr<PhysicalVolume> &pvol) const;
+    bool RayTrace(const Ray &ray, double &time, PhysicalVolume *&pvol) const;
     void GetLineSegments(const Ray &, std::vector<LineSegment> &, const Transform3D &) const;
 
   private:
@@ -104,6 +105,7 @@ class PhysicalVolume {
         return m_transform.Inverse().Apply(point);
     }
     Ray TransformRay(const Ray &ray) const;
+    Ray TransformRayCached(const Ray &ray) const;
     Ray TransformRayInverse(const Ray &ray) const;
     std::string m_name;
     std::shared_ptr<LogicalVolume> m_volume;
@@ -115,6 +117,17 @@ class PhysicalVolume {
     Rotation3D m_rot;
     Translation3D m_trans;
     bool is_identity{}, is_translation{};
+
+    // Geant4-style cached parent->local direction transform.  Within a single
+    // ray the input (parent-frame) direction is invariant while only the origin
+    // advances, so the rotated local direction and its inverse can be reused
+    // across the many leaf Intersect() calls that one ray triggers.  Keyed on
+    // the input direction; recomputed when it changes (i.e. once per new ray).
+    // mutable + single-threaded, matching the m_bvh lazy-build precedent.
+    mutable Vector3D m_dir_cache_in{};
+    mutable Vector3D m_dir_cache_local{};
+    mutable Vector3D m_dir_cache_inv{};
+    mutable bool m_dir_cache_valid = false;
 };
 
 } // namespace NuGeom

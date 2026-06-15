@@ -163,6 +163,15 @@ bool PhysicalVolume::RayTrace(const Ray &ray, double &time,
     return m_bvh->Traverse(ray, time, pvol);
 }
 
+bool PhysicalVolume::RayTrace(const Ray &ray, double &time, PhysicalVolume *&pvol) const {
+    if(m_own_daughters.empty()) return false;
+    if(!m_bvh) {
+        m_bvh = std::make_shared<BVH>();
+        m_bvh->Build(m_own_daughters);
+    }
+    return m_bvh->Traverse(ray, time, pvol);
+}
+
 NuGeom::BoundingBox PhysicalVolume::GetParentBoundingBox() const {
     BoundingBox local_bb = m_volume->GetShape()->GetTransformedBoundingBox();
 
@@ -185,11 +194,31 @@ NuGeom::BoundingBox PhysicalVolume::GetParentBoundingBox() const {
 }
 
 double PhysicalVolume::Intersect(const Ray &in_ray) const {
-    auto ray = TransformRay(in_ray);
-    const auto [t1, t2] = m_volume->GetShape()->Intersect2(ray);
+    const auto [t1, t2] = m_volume->GetShape()->Intersect2(TransformRayCached(in_ray));
     if(t1 > 0) return t1;  // ray enters from outside: return entry time
     if(t2 > 0) return 0.0; // ray origin is inside: enter immediately
     return std::numeric_limits<double>::infinity();
+}
+
+// Like TransformRay, but reuses a cached rotated direction + its inverse when
+// the input direction is unchanged (the common case while a single ray walks
+// the geometry), avoiding the per-call direction rotation and the three
+// divisions the Ray constructor would otherwise do.  Only the origin transform
+// runs every call.  Bit-identical to TransformRay for a given input.
+NuGeom::Ray PhysicalVolume::TransformRayCached(const Ray &in_ray) const {
+    if(is_identity) return in_ray;
+
+    const Vector3D &in_dir = in_ray.Direction();
+    if(!m_dir_cache_valid || in_dir != m_dir_cache_in) {
+        const Ray td = TransformRay(in_ray); // direction transform ignores translation
+        m_dir_cache_in = in_dir;
+        m_dir_cache_local = td.Direction();
+        m_dir_cache_inv = td.InvDirection();
+        m_dir_cache_valid = true;
+    }
+    const Vector3D local_origin = is_translation ? m_trans.Apply(in_ray.Origin())
+                                                 : m_rot.Apply(m_trans.Apply(in_ray.Origin()));
+    return Ray(local_origin, m_dir_cache_local, m_dir_cache_inv, in_ray.POT());
 }
 
 void PhysicalVolume::GetLineSegments(const Ray &in_ray, std::vector<LineSegment> &segments,
@@ -202,6 +231,11 @@ void PhysicalVolume::GetLineSegments(const Ray &in_ray, std::vector<LineSegment>
     auto current_ray = in_ray;
     // from_global for daughters: world → this PV's local frame.
     const auto daughter_fg = from_global * m_transform;
+
+    // The global ray direction is invariant for the whole traversal, so reuse
+    // its precomputed inverse instead of redividing on every reconstruction.
+    const Vector3D &gdir = in_ray.Direction();
+    const Vector3D &ginv = in_ray.InvDirection();
 
     // If the ray starts OUTSIDE this volume, advance it to the entry face first.
     // The loop below assumes an interior origin (so Shape::Intersect returns the
@@ -216,22 +250,37 @@ void PhysicalVolume::GetLineSegments(const Ray &in_ray, std::vector<LineSegment>
             const auto [t_in, t_out] = m_volume->GetShape()->Intersect2(entry_ray);
             if(!(std::isfinite(t_in) && t_in > 0 && t_out > t_in))
                 return; // ray never enters this volume
-            current_ray =
-                Ray(current_ray.Propagate(t_in + eps), in_ray.Direction(), in_ray.POT(), false);
+            current_ray = Ray(current_ray.Propagate(t_in + eps), gdir, ginv, in_ray.POT());
         }
     }
 
+    // The shape-local ray direction (and its inverse) is also invariant across
+    // iterations — only the origin advances.  Compute it once via the normal
+    // transform path, then per iteration transform just the advancing origin.
+    // The direction transform ignores translation, so this matches exactly what
+    // TransformRay(ApplyRayDirect(...)) produced per-iteration before.
+    const Ray probe_local = TransformRay(Transform3D::ApplyRayDirect(in_ray, from_global));
+    const Vector3D shape_dir = probe_local.Direction();
+    const Vector3D shape_inv = probe_local.InvDirection();
+    // world origin → this PV's shape-local frame, mirroring the origin handling
+    // of ApplyRayDirect(·, from_global) followed by TransformRay(·).
+    const auto to_shape_origin = [&](const Vector3D &world_o) -> Vector3D {
+        const Vector3D lo = from_global.Apply(world_o);
+        if(is_identity) return lo;
+        if(is_translation) return m_trans.Apply(lo);
+        return m_rot.Apply(m_trans.Apply(lo));
+    };
+
     for(size_t iter = 0; iter < kMaxIter; ++iter) {
-        auto local_ray = Transform3D::ApplyRayDirect(current_ray, from_global);
-        auto ray = TransformRay(local_ray);
-        auto shift_ray = Ray(ray.Propagate(eps), ray.Direction(), ray.POT(), false);
+        Ray ray(to_shape_origin(current_ray.Origin()), shape_dir, shape_inv, in_ray.POT());
+        Ray shift_ray(ray.Propagate(eps), shape_dir, shape_inv, in_ray.POT());
 
         // Always compute exit time from this volume's shape.
         double exit_time = m_volume->GetShape()->Intersect(shift_ray);
 
         // Find closest daughter.
         double daughter_time = std::numeric_limits<double>::infinity();
-        std::shared_ptr<PhysicalVolume> pvol = nullptr;
+        PhysicalVolume *pvol = nullptr;
         RayTrace(shift_ray, daughter_time, pvol);
 
         // Take whichever is closer: daughter entry or volume exit.
@@ -252,7 +301,7 @@ void PhysicalVolume::GetLineSegments(const Ray &in_ray, std::vector<LineSegment>
             auto seg_before = segments.size();
             pvol->GetLineSegments(current_ray, segments, daughter_fg);
             if(segments.size() > seg_before) {
-                current_ray = Ray(segments.back().End(), in_ray.Direction(), in_ray.POT(), false);
+                current_ray = Ray(segments.back().End(), gdir, ginv, in_ray.POT());
                 continue;
             }
             // Daughter returned without adding segments (boundary precision
@@ -265,11 +314,10 @@ void PhysicalVolume::GetLineSegments(const Ray &in_ray, std::vector<LineSegment>
                 // Emit daughter's material for its full extent
                 segments.emplace_back(current_ray.Origin(), current_ray.Propagate(dt2 + eps),
                                       pvol->GetLogicalVolume()->GetMaterial());
-                current_ray = Ray(segments.back().End(), in_ray.Direction(), in_ray.POT(), false);
+                current_ray = Ray(segments.back().End(), gdir, ginv, in_ray.POT());
             } else {
                 // Daughter is negligible at this point; skip it
-                current_ray =
-                    Ray(current_ray.Propagate(eps), in_ray.Direction(), in_ray.POT(), false);
+                current_ray = Ray(current_ray.Propagate(eps), gdir, ginv, in_ray.POT());
             }
             continue;
         }
@@ -292,12 +340,12 @@ void PhysicalVolume::GetLineSegments(const Ray &in_ray, std::vector<LineSegment>
         if(!pvol) return; // exited volume, no daughter ahead
 
         // Enter daughter (recurse DOWN only — bounded by nesting depth).
-        auto daughter_ray = Ray(next_origin, in_ray.Direction(), in_ray.POT(), false);
+        auto daughter_ray = Ray(next_origin, gdir, ginv, in_ray.POT());
         pvol->GetLineSegments(daughter_ray, segments, daughter_fg);
 
         // Continue from daughter's exit point.
         if(segments.empty()) return;
-        current_ray = Ray(segments.back().End(), in_ray.Direction(), in_ray.POT(), false);
+        current_ray = Ray(segments.back().End(), gdir, ginv, in_ray.POT());
     }
     NuGeom::Log().warn("PhysicalVolume::GetLineSegments: iteration limit reached in '{}'", m_name);
 }

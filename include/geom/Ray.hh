@@ -13,9 +13,18 @@ class Ray {
         m_inv_direction = {1.0 / m_direction.X(), 1.0 / m_direction.Y(), 1.0 / m_direction.Z()};
     }
 
-    Vector3D Origin() const { return m_origin; }
-    Vector3D Direction() const { return m_direction; }
-    Vector3D InvDirection() const { return m_inv_direction; }
+    /// Construct a ray reusing a precomputed inverse direction.  Used in the
+    /// hot geometry-traversal loop where the direction (and hence its inverse)
+    /// is invariant while only the origin advances, so the three divisions in
+    /// the normalizing constructor would be pure waste.  The caller is
+    /// responsible for passing an inv_direction consistent with direction.
+    Ray(const Vector3D &origin, const Vector3D &direction, const Vector3D &inv_direction,
+        double pot)
+        : m_origin{origin}, m_direction{direction}, m_inv_direction{inv_direction}, m_pot{pot} {}
+
+    const Vector3D &Origin() const { return m_origin; }
+    const Vector3D &Direction() const { return m_direction; }
+    const Vector3D &InvDirection() const { return m_inv_direction; }
     Vector3D Propagate(double t) const { return m_origin + t * m_direction; }
     double POT() const { return m_pot; }
 
