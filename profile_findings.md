@@ -291,3 +291,16 @@ traversal (500/500) and ROOT, ~1.9x faster; full unit suite passes either way.
 **Session net:** geometry traversal sped up (branchless AABB, hoisted transforms, raw-pointer BVH,
 sweep default ~1.9x) AND made correct vs ROOT — fixed daughter_fg order, Intersect2 forward-crossing,
 CSG rotation order, tube phi-wedge; added IntersectAll. ROOT agreement 99.8% (1 niche support-leg ray).
+
+## 100% ROOT agreement reached (2026-06-16, commit 8995b76)
+
+Final disagreement was the support legs (volsupport's Volume001014, a numsides=3 PolyhedraRegular).
+ROOT (TGeoPgon) confirmed the **apothem convention**: a numsides=3 rmax=4.064 prism contains points
+along a vertex direction out to ~8.13 = rmax/cos(60deg).  Our Polyhedra placed vertices AT rmax (too
+small by cos(pi/n)).  Two-part fix: (1) scale vertex radius by 1/cos(0.5*deltaphi/nsides) in the
+boundary construction; (2) enlarge GetBoundingBox to that corner radius -- the AABB was culling the
+enlarged shape, which is why the shape fix alone showed no change.  500-ray hall scan vs ROOT's
+TGeoNavigator: 499 -> **500/500**.  Full unit suite passes; sweep still equals sequential 500/500.
+
+**The geometry traversal now agrees with ROOT ray-for-ray on the ND geometry, via the default
+boundary-sweep that is ~1.9x faster than the sequential traversal.**
