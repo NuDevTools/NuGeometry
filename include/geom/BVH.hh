@@ -30,6 +30,11 @@ class BVH {
     /// pointer is non-owning and valid as long as the daughter list outlives it.
     bool Traverse(const Ray &ray, double &time, PhysicalVolume *&vol) const;
 
+    /// Append the daughter indices of every leaf whose AABB the ray hits (no
+    /// nearest-hit culling).  Used by the boundary-sweep to find all candidate
+    /// daughters at a level in one descent.
+    void CollectHits(const Ray &ray, std::vector<size_t> &out) const;
+
     bool IsBuilt() const { return !m_nodes.empty(); }
 
   private:

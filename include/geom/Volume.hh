@@ -10,6 +10,17 @@ namespace NuGeom {
 class BVH;
 class LineSegment;
 class PhysicalVolume;
+class Ray;
+
+/// One boundary-crossing event used by the boundary-sweep traversal.
+/// delta = +1 when the volume becomes active at t, -1 when it ends.
+/// depth = nesting depth (deeper overrides shallower for material).
+struct IntervalEvent {
+    double t;
+    int delta;
+    int depth;
+    const Material *material;
+};
 
 class LogicalVolume {
   public:
@@ -98,6 +109,18 @@ class PhysicalVolume {
     bool RayTrace(const Ray &ray, double &time, std::shared_ptr<PhysicalVolume> &pvol) const;
     bool RayTrace(const Ray &ray, double &time, PhysicalVolume *&pvol) const;
     void GetLineSegments(const Ray &, std::vector<LineSegment> &, const Transform3D &) const;
+
+    /// Boundary-sweep collection: append this volume's [enter,exit] crossing
+    /// events (and those of every hit descendant) for the world-frame ray.
+    /// Each volume's interval is clipped to its parent's active window
+    /// [parent_lo, parent_hi] so a daughter that protrudes outside its mother
+    /// (a real possibility in detector GDMLs) cannot leak its material into the
+    /// gap -- this enforces the same hierarchical containment the sequential
+    /// traversal applies.
+    /// @param from_global  world -> this volume's parent frame transform.
+    void CollectIntervals(const Ray &world_ray, const Transform3D &from_global, int depth,
+                          double parent_lo, double parent_hi,
+                          std::vector<IntervalEvent> &events) const;
 
   private:
     Vector3D TransformPoint(const Vector3D &point) const { return m_transform.Apply(point); }

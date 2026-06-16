@@ -146,3 +146,22 @@ bool BVH::Traverse(const NuGeom::Ray &ray, double &time, NuGeom::PhysicalVolume 
     vol = m_daughter_ptrs[idx];
     return true;
 }
+
+void BVH::CollectHits(const NuGeom::Ray &ray, std::vector<size_t> &out) const {
+    if(m_nodes.empty()) return;
+    const Node *const nodes = m_nodes.data();
+    std::array<size_t, 64> stack;
+    size_t sp = 0;
+    if(std::isfinite(nodes[0].bbox.IntersectT(ray))) stack[sp++] = 0;
+    while(sp > 0) {
+        const Node &node = nodes[stack[--sp]];
+        if(node.pv_idx != kInvalid) {
+            out.push_back(node.pv_idx);
+            continue;
+        }
+        if(node.left != kInvalid && std::isfinite(nodes[node.left].bbox.IntersectT(ray)))
+            stack[sp++] = node.left;
+        if(node.right != kInvalid && std::isfinite(nodes[node.right].bbox.IntersectT(ray)))
+            stack[sp++] = node.right;
+    }
+}

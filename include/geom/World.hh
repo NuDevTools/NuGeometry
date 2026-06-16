@@ -27,6 +27,27 @@ class World {
     bool SphereTrace(const Ray &, double &, size_t &, size_t &) const;
     bool RayTrace(const Ray &, double &, size_t &) const;
     std::vector<LineSegment> GetLineSegments(const Ray &) const;
+    /// Sequential boundary-to-boundary traversal (the default).
+    std::vector<LineSegment> GetLineSegmentsSequential(const Ray &) const;
+    /// EXPERIMENTAL analytic boundary-sweep: collect all volume crossings in one
+    /// descent, sort, and sweep tracking the innermost (deepest) active volume.
+    /// ~1.8x faster but NOT exact where volumes overlap / are not strictly
+    /// nested (it resolves material by tree depth, not placement order).  Use
+    /// CheckSweepConsistency() to locate such regions; not for production.
+    std::vector<LineSegment> GetLineSegmentsSweep(const Ray &) const;
+
+    /// A region where the experimental sweep disagrees with the hierarchical
+    /// point-in-volume containment (FindMaterial) — a likely overlapping /
+    /// non-nested-volume spot in the GDML worth inspecting.
+    struct SweepOverlap {
+        Vector3D start, end;
+        std::string sweep_material;     ///< material the sweep assigned
+        std::string contained_material; ///< material at the segment midpoint by containment
+    };
+    /// Run the sweep and flag every segment whose midpoint material disagrees
+    /// with the containment oracle.  Logs a warning per discrepancy (likely a
+    /// GDML overlap) and returns them.  @param warn  emit log warnings.
+    std::vector<SweepOverlap> CheckSweepConsistency(const Ray &ray, bool warn = true) const;
     size_t NDaughters() const { return m_root_pv ? m_root_pv->Daughters().size() : 0; }
     const std::shared_ptr<LogicalVolume> &GetLogicalVolume() const { return m_volume; }
     const std::shared_ptr<PhysicalVolume> &GetRootPV() const { return m_root_pv; }

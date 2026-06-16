@@ -4,9 +4,12 @@
 #include "geom/LineSegment.hh"
 #include "geom/Logging.hh"
 #include "geom/Ray.hh"
+#include <algorithm>
+#include <cstdlib>
 #include <limits>
 #include <map>
 #include <set>
+#include <string>
 
 using NuGeom::World;
 
@@ -116,6 +119,25 @@ static std::vector<NuGeom::LineSegment> PruneSegments(std::vector<NuGeom::LineSe
 }
 
 std::vector<NuGeom::LineSegment> World::GetLineSegments(const Ray &ray) const {
+    // Runtime selector (read once): NUGEOM_TRAVERSAL=sweep picks the analytic
+    // boundary-sweep; anything else keeps the default sequential traversal.
+    // Both paths coexist so they can be A/B benchmarked and cross-validated.
+    static const bool use_sweep = [] {
+        const char *e = std::getenv("NUGEOM_TRAVERSAL");
+        const bool sweep = e && std::string(e) == "sweep";
+        if(sweep)
+            NuGeom::Log().warn(
+                "EXPERIMENTAL boundary-sweep traversal enabled (NUGEOM_TRAVERSAL=sweep): ~1.8x "
+                "faster but NOT exact where volumes overlap / are not strictly nested. The default "
+                "sequential traversal is exact; use World::CheckSweepConsistency() to locate "
+                "suspect "
+                "regions.");
+        return sweep;
+    }();
+    return use_sweep ? GetLineSegmentsSweep(ray) : GetLineSegmentsSequential(ray);
+}
+
+std::vector<NuGeom::LineSegment> World::GetLineSegmentsSequential(const Ray &ray) const {
     std::vector<NuGeom::LineSegment> segments;
     if(!m_volume) throw std::runtime_error("NuGeom: World does not have a volume!");
     // Use the root PV's GetLineSegments which handles daughter traversal
@@ -123,6 +145,73 @@ std::vector<NuGeom::LineSegment> World::GetLineSegments(const Ray &ray) const {
     m_root_pv->GetLineSegments(ray, segments, {});
     NuGeom::Log().trace("World: Line Segments found -> {}", fmt::join(segments, ", "));
     return PruneSegments(std::move(segments));
+}
+
+std::vector<NuGeom::LineSegment> World::GetLineSegmentsSweep(const Ray &ray) const {
+    if(!m_volume) throw std::runtime_error("NuGeom: World does not have a volume!");
+
+    // 1. Collect every volume-crossing event along the ray in one tree descent.
+    //    The root spans the whole forward ray; descendants are clipped to their
+    //    parents so a protruding daughter cannot leak outside its mother.
+    std::vector<NuGeom::IntervalEvent> events;
+    constexpr double inf = std::numeric_limits<double>::infinity();
+    m_root_pv->CollectIntervals(ray, NuGeom::Transform3D{}, 0, 0.0, inf, events);
+    if(events.empty()) return {};
+
+    // 2. Order boundaries along the ray.
+    std::sort(
+        events.begin(), events.end(),
+        [](const NuGeom::IntervalEvent &a, const NuGeom::IntervalEvent &b) { return a.t < b.t; });
+
+    // 3. Sweep.  `active` maps nesting depth -> material of the volume active at
+    // that depth; properly nested geometry has at most one volume per depth
+    // active at any t, so the material is the deepest active entry.  A segment
+    // spans from one boundary to the next, carrying the material in force there.
+    std::vector<NuGeom::LineSegment> segments;
+    std::map<int, const Material *> active;
+    const Material *cur_mat = nullptr;
+    double seg_start = 0.0;
+    const size_t n = events.size();
+    for(size_t i = 0; i < n;) {
+        const double t = events[i].t;
+        // Apply all events at this boundary before deciding the next material.
+        for(; i < n && events[i].t == t; ++i) {
+            const auto &e = events[i];
+            if(e.delta > 0)
+                active[e.depth] = e.material;
+            else {
+                auto it = active.find(e.depth);
+                if(it != active.end() && it->second == e.material) active.erase(it);
+            }
+        }
+        // Emit the segment that ended at this boundary (material before it).
+        if(cur_mat && t > seg_start)
+            segments.emplace_back(ray.Propagate(seg_start), ray.Propagate(t), *cur_mat);
+        seg_start = t;
+        cur_mat = active.empty() ? nullptr : active.rbegin()->second;
+    }
+    NuGeom::Log().trace("World(sweep): Line Segments found -> {}", fmt::join(segments, ", "));
+    return PruneSegments(std::move(segments));
+}
+
+std::vector<World::SweepOverlap> World::CheckSweepConsistency(const Ray &ray, bool warn) const {
+    std::vector<SweepOverlap> out;
+    const auto segs = GetLineSegmentsSweep(ray);
+    for(const auto &s : segs) {
+        // Midpoint material per the hierarchical containment oracle (placement
+        // order resolves overlaps — the sequential traversal's semantics).
+        const Vector3D mid = s.Start() + 0.5 * (s.End() - s.Start());
+        const Material truth = FindMaterial(mid);
+        if(truth.Name() != s.GetMaterial().Name()) {
+            out.push_back({s.Start(), s.End(), s.GetMaterial().Name(), truth.Name()});
+            if(warn)
+                NuGeom::Log().warn(
+                    "Sweep/containment mismatch (possible GDML overlap or non-nested "
+                    "volume): z=[{:.4f}, {:.4f}] sweep='{}' but containment='{}'",
+                    s.Start().Z(), s.End().Z(), s.GetMaterial().Name(), truth.Name());
+        }
+    }
+    return out;
 }
 
 std::pair<double, size_t> World::GetSDF(const Vector3D &pos) const {

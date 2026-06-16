@@ -350,6 +350,38 @@ void PhysicalVolume::GetLineSegments(const Ray &in_ray, std::vector<LineSegment>
     NuGeom::Log().warn("PhysicalVolume::GetLineSegments: iteration limit reached in '{}'", m_name);
 }
 
+void PhysicalVolume::CollectIntervals(const Ray &world_ray, const Transform3D &from_global,
+                                      int depth, double parent_lo, double parent_hi,
+                                      std::vector<IntervalEvent> &events) const {
+    // Ray in this volume's shape-local frame (rigid transforms preserve the ray
+    // parameter t, so the local entry/exit times are world-frame distances).
+    const Ray local = TransformRay(Transform3D::ApplyRayDirect(world_ray, from_global));
+    const auto [t_in, t_out] = m_volume->GetShape()->Intersect2(local);
+    if(!std::isfinite(t_out) || t_out <= 0.0) return; // misses or already behind the origin
+
+    const double enter = t_in > 0.0 ? t_in : 0.0; // t_in < 0 => origin already inside
+    // Clip this volume's interval to the parent's active window: a daughter is
+    // only "really" inside the geometry where its mother also contains the ray.
+    const double lo = std::max(enter, parent_lo);
+    const double hi = std::min(t_out, parent_hi);
+    if(lo >= hi) return; // no overlap with the mother -> this volume does not apply here
+
+    const Material &mat = m_volume->GetMaterial();
+    events.push_back({lo, +1, depth, &mat});
+    events.push_back({hi, -1, depth, &mat});
+
+    if(m_own_daughters.empty()) return;
+    if(!m_bvh) {
+        m_bvh = std::make_shared<BVH>();
+        m_bvh->Build(m_own_daughters);
+    }
+    std::vector<size_t> hits;
+    m_bvh->CollectHits(local, hits); // daughters' parent-frame AABBs live in `local`'s frame
+    const Transform3D daughter_fg = from_global * m_transform;
+    for(size_t idx : hits) // children clipped to THIS volume's [lo, hi]
+        m_own_daughters[idx]->CollectIntervals(world_ray, daughter_fg, depth + 1, lo, hi, events);
+}
+
 NuGeom::Ray PhysicalVolume::TransformRay(const Ray &ray) const {
     if(is_identity)
         return ray;
