@@ -270,3 +270,24 @@ sequential daughter-descent in the TPC pixel-plane stack (why a thin G10 board's
 
 Analysis scripts: `build/analyze_profile.py`, `build/analyze_callers.py`, `build/analyze_callees.py`
 (usage: `python3 analyze_profile.py "<profile>.json.gz"`).
+
+## Parser CSG fixes + sweep made default (2026-06-16)
+
+Pursuing 100% ROOT agreement on a 500-ray hall scan (`[.][navall]` + compare_segments.py):
+- **CSG operand rotation order (a664661):** ParseCSGTransform composed `rot * trans(pos)` (translation
+  in the unrotated frame); GDML rotates then translates, so it must be `(trans(pos) * rot).Inverse()`.
+  Equal for pure translations (detector was fine) but mislocated rotated operands (hall NDHallAirVol
+  Space3/Space4 tubes), shifting the hall Air volume by metres on angled rays. 424 -> 431/500.
+- **Tube azimuthal wedge (a664661):** Cylinder ignored startphi/deltaphi (always full 2π); the 135°
+  wedge Space4 over-included its complement as air. Added a two-half-plane wedge cut (exact for convex
+  deltaphi ≤ π). 431 -> **499/500**.
+- **Remaining 1/500:** rotated PolyhedraRegular triangular support legs in volsupport (~1 mm steel) —
+  a niche shape-orientation detail vs ROOT, deferred (lower priority).
+
+**Sweep made the default (acf2756):** `World::GetLineSegments` uses the boundary-sweep by default
+(NUGEOM_TRAVERSAL=sequential for the fallback). It is ray-for-ray equivalent to the sequential
+traversal (500/500) and ROOT, ~1.9x faster; full unit suite passes either way.
+
+**Session net:** geometry traversal sped up (branchless AABB, hoisted transforms, raw-pointer BVH,
+sweep default ~1.9x) AND made correct vs ROOT — fixed daughter_fg order, Intersect2 forward-crossing,
+CSG rotation order, tube phi-wedge; added IntersectAll. ROOT agreement 99.8% (1 niche support-leg ray).
