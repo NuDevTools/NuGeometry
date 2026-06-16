@@ -162,7 +162,19 @@ in/out state is already in inside(0)). **After both fixes ALL 12/12 navigator-co
 ROOT's TGeoNavigator exactly.** Regression test: `test/test_shape.cc` "CombinedShape::Intersect2 returns
 the forward wall (two-wall subtraction)".
 
-### Sequential vs sweep re-comparison (2026-06-16, after both fixes)
+### IntersectAll + final re-comparison (2026-06-16, commit 8060f37)
+Added `Shape::IntersectAll` (all solid spans; CombinedShape = interval-set union/intersect/subtract of
+children; convex = single Intersect2 span). `CollectIntervals` now emits an event pair per span, so the
+sweep captures multi-interval CSG (the two-wall composite window) instead of just the first wall.
+**Result: sweep vs sequential cross-validation 400/500 -> 500/500; navcompare 12/12 vs ROOT; the
+[navmismatch] test now writes 0 mismatch rays.** Timing: **sweep ~1.9x faster** (~23.6 ms vs ~44.6 ms /
+500 rays). Sweep-vs-containment overlap scan: 12 -> ~7/2000, the residual being the parser hall bug
+(elevatorBlock) + a couple thin TPC-PCB depth-override edges that the sequential shares (sweep ≡
+sequential now). **Net: both traversals agree and match ROOT; the sweep is a correct ~1.9x-faster
+alternative.** Only open item: the parser nested-CSG hall shape (volDetEnclosure) -- a geometry-
+construction bug, not traversal, lower priority.
+
+### Sequential vs sweep re-comparison (2026-06-16, after the daughter_fg + Intersect2 fixes)
 Both fixes touch `Intersect2`/`daughter_fg`, which the sweep's `CollectIntervals` also uses, so the
 sweep improved a lot: the `[overlapscan]` (sweep vs FindMaterial containment, 2000 rays) dropped from
 **154 -> 12** disagreements. Timing unchanged: **sweep ~1.9-2x faster** (~22 ms vs ~45 ms / 500 rays).
