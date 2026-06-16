@@ -178,15 +178,18 @@ Took the 100 rays where sweep != sequential and did a 3-way compare vs ROOT (`[.
 - **Sweep: all 100 mismatches are a pure subsequence of ROOT** (it only ever *drops* walls, never
   reports a wrong material) -> confirms the sweep's only gap is the single-interval CSG wall miss
   (needs IntersectAll), NOT a new bug.
-- **Sequential: 19/100 also disagree with ROOT** — a separate, still-open traversal bug. Example ray 2
-  (angled, dir≈(-0.146,0.033,0.989)): sequential reports Rock to z=1216 but ROOT/`FindMaterial` enter
-  Air (`volDetEnclosure`, a CombinedShape) at z≈735 — ~481 cm of Rock that should be Air; also an Air
-  span ~401 cm too long on exit. `FindMaterial` (our containment oracle) agrees with ROOT, so it's a
-  **traversal** bug, not geometry. Involves the large CSG `volDetEnclosure` (Air) and `elevatorBlock_lv`
-  on *angled* rays. Distinct from the two fixed bugs; affects hall/enclosure boundaries by hundreds of
-  cm. Next: trace the angled-ray entry into volDetEnclosure (likely CSG Intersect2 entry/exit or the
-  elevatorBlock interaction). Repro: `[.][navmismatch]` writes tools/mism_{rays,seq,swp}.txt; ROOT via
-  `navigate_rays(...,"tools/mism_rays.txt","tools/mism_root.txt")`.
+- **Sequential: 19/100 also disagree with ROOT** — DIAGNOSED 2026-06-16 as a **GEOMETRY-CONSTRUCTION
+  (parser) bug, NOT a traversal bug.** With z computed correctly for the angled ray (×dir_z), our
+  `FindMaterial` (point-in-volume containment) returns Rock through z≈863 and Air at z≈950, i.e. our
+  parsed `volDetEnclosure` (Air) starts ~475 cm LATER than ROOT's (z≈388). The sequential traversal
+  MATCHES our FindMaterial (~863), so the traversal is correct — our *parsed shape* differs from ROOT's.
+  `volDetEnclosure`'s solid `NDHallAirVolShape` is a **6-level left-nested union of boxes** with large
+  positioned operands (e.g. NDHallAirVolSpace7 at x=-2758). `GDMLParser::ParseSolids` builds each
+  boolean's second operand as a `TransformedShape` (ParseCSGTransform = `(rot*Translation3D(pos))
+  .Inverse()`); the chained-union result lands ~475 cm off ROOT's TGeoManager. **Open parser/nested-CSG
+  positioning issue, hall Air volume only** (the detector region parses correctly — the 12 navcompare
+  rays match). Lower physics priority (hall/enclosure edges, not interaction targets). Separate effort:
+  verify how chained boolean operand frames compose vs ROOT. Repro: `[.][navmismatch]`.
 
 ### Original report (for context)
 ## ⚠ PRODUCTION BUG found by ROOT TGeoNavigator comparison (2026-06-16)
