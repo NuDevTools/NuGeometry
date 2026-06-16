@@ -299,3 +299,42 @@ TEST_CASE("Sweep mismatch rays for ROOT 3-way compare", "[.][navmismatch]") {
     std::cerr << "  Wrote " << n << " mismatching rays + seq/swp segments\n";
     REQUIRE(true);
 }
+
+// Emit ALL 500 benchmark rays + sequential segments for a full ROOT agreement
+// measurement (broader than the 12 fixed [navcompare] rays).
+TEST_CASE("Emit all benchmark rays + sequential for ROOT compare", "[.][navall]") {
+    const std::string root = std::string(NUGEOM_SOURCE_DIR);
+    NuGeom::GDMLParser parse(root + "/nd_hall_with_lar_tms_nosand.gdml");
+    auto world = parse.GetWorld();
+    auto box = world.GetWorldBox();
+    auto vb = world.GetVolumeBounds(4);
+    double xlo = 0, xhi = 0, ylo = 0, yhi = 0;
+    for(const auto &v : vb)
+        if(v.name == "volArgonCubeDetector") {
+            xlo = v.bb.min.X();
+            xhi = v.bb.max.X();
+            ylo = v.bb.min.Y();
+            yhi = v.bb.max.Y();
+            break;
+        }
+    const double z0 = box.min.Z() + 1.0;
+    std::mt19937 rng(42);
+    std::uniform_real_distribution<double> dx(xlo, xhi), dy(ylo, yhi), da(-0.15, 0.15);
+    std::ofstream fr(root + "/tools/all_rays.txt"), fs(root + "/tools/all_seq.txt");
+    fr << std::setprecision(12);
+    fs << std::setprecision(10);
+    for(size_t i = 0; i < 500; ++i) {
+        NuGeom::Vector3D o(dx(rng), dy(rng), z0);
+        NuGeom::Vector3D d =
+            (i % 2 == 0) ? NuGeom::Vector3D(0, 0, 1) : NuGeom::Vector3D(da(rng), da(rng), 1);
+        NuGeom::Ray ray(o, d, 1.0);
+        const auto &u = ray.Direction();
+        fr << o.X() << " " << o.Y() << " " << o.Z() << " " << u.X() << " " << u.Y() << " " << u.Z()
+           << "\n";
+        auto seq = world.GetLineSegmentsSequential(ray);
+        fs << i;
+        for(auto &s : seq) fs << "  " << s.Length() << ":" << s.GetMaterial().Name();
+        fs << "\n";
+    }
+    std::cerr << "  Wrote 500 rays + sequential segments\n";
+}

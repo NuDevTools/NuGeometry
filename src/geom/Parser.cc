@@ -282,7 +282,13 @@ ParseCSGTransform(const pugi::xml_node &solid,
         rot = rotZ * rotY * rotX;
     }
 
-    return (rot * Translation3D(pos)).Inverse();
+    // GDML boolean: the second operand is rotated then translated, so the
+    // local->parent placement is trans(pos) ∘ rot (rotate first, then move).
+    // The world->operand transform we want is its inverse.  Using
+    // rot * trans(pos) instead applies the translation in the unrotated frame,
+    // which is identical for pure translations but mislocates an operand that
+    // also carries a rotation (e.g. the hall NDHallAirVol Space3/Space4 tubes).
+    return (Translation3D(pos) * rot).Inverse();
 }
 
 void GDMLParser::ParseSolids(const pugi::xml_node &solids) {

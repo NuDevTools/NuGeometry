@@ -410,6 +410,26 @@ TEST_CASE("CombinedShape::Intersect2 returns the forward wall (two-wall subtract
 // ---------------------------------------------------------------------------
 // Polyhedra
 // ---------------------------------------------------------------------------
+TEST_CASE("Cylinder azimuthal wedge (startphi/deltaphi)", "[Shapes]") {
+    // 90-degree wedge of a radius-1, half-height-1 tube spanning phi in [0, pi/2]
+    // (the +x,+y quadrant).  A ray along +x at small +y is inside the wedge; the
+    // same geometry mirrored into another quadrant is outside.  Regression for
+    // tubes ignoring deltaphi (which over-included the GDML hall's Space4 wedge).
+    NuGeom::Cylinder wedge(1.0, 1.0, NuGeom::Rotation3D{}, NuGeom::Translation3D{}, 0.0, M_PI / 2);
+
+    // Inside the wedge (first quadrant).
+    CHECK(wedge.SignedDistance({0.5, 0.3, 0.0}) < 0);
+    // Outside the wedge but inside the full circle (third quadrant).
+    CHECK(wedge.SignedDistance({-0.5, -0.3, 0.0}) > 0);
+
+    // Ray along +x through the wedge (y small positive): hits the curved surface.
+    auto in = wedge.Intersect2(NuGeom::Ray{{-2, 0.1, 0}, {1, 0, 0}, 1.0});
+    CHECK(std::isfinite(in.second));
+    // Ray along -x (into the third quadrant, outside the wedge): misses.
+    auto out = wedge.Intersect2(NuGeom::Ray{{2, -0.1, 0}, {-1, 0, 0}, 1.0});
+    CHECK(!std::isfinite(out.second));
+}
+
 TEST_CASE("Polyhedra", "[Shapes]") {
     // Regular hexagonal prism: nsides=6, full 2π, rmax=1, z in [-1, 1]
     std::vector<NuGeom::zplane> planes = {{0.0, 1.0, -1.0}, {0.0, 1.0, 1.0}};

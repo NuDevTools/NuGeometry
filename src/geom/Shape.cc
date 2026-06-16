@@ -455,15 +455,28 @@ std::unique_ptr<NuGeom::Shape> NuGeom::Cylinder::Construct(const pugi::xml_node 
         height /= 10;
     }
 
+    // Azimuthal wedge (radians; default full circle).
+    double startphi = node.attribute("startphi").as_double();
+    double deltaphi = node.attribute("deltaphi").as_double(2.0 * M_PI);
+    std::string aunit = node.attribute("aunit").value();
+    if(aunit == "deg" || aunit == "degree") {
+        startphi *= M_PI / 180.0;
+        deltaphi *= M_PI / 180.0;
+    }
+
     double half_h = height / 2.0;
     if(rmin > 0) {
-        // Hollow cylinder: outer - inner via CSG subtraction
-        auto outer = std::make_shared<NuGeom::Cylinder>(rmax, half_h);
-        auto inner = std::make_shared<NuGeom::Cylinder>(rmin, half_h);
+        // Hollow cylinder: outer - inner via CSG subtraction (same wedge on both
+        // so the subtraction leaves an annular wedge).
+        auto outer = std::make_shared<NuGeom::Cylinder>(rmax, half_h, Rotation3D{}, Translation3D{},
+                                                        startphi, deltaphi);
+        auto inner = std::make_shared<NuGeom::Cylinder>(rmin, half_h, Rotation3D{}, Translation3D{},
+                                                        startphi, deltaphi);
         // CombinedShape kSubtraction: left - right → outer - inner
         return std::make_unique<NuGeom::CombinedShape>(inner, outer, ShapeBinaryOp::kSubtraction);
     }
-    return std::make_unique<NuGeom::Cylinder>(rmax, half_h);
+    return std::make_unique<NuGeom::Cylinder>(rmax, half_h, Rotation3D{}, Translation3D{}, startphi,
+                                              deltaphi);
 }
 
 // TODO: Ensure that Cylinder is centered at {0, 0, 0} and not {0, 0, height/2}
@@ -475,7 +488,15 @@ double NuGeom::Cylinder::SignedDistance(const Vector3D &in_point) const {
     auto point = TransformPoint(in_point);
     Vector2D q = Vector2D(Vector2D(point.X(), point.Y()).Norm(), std::abs(point.Z())) -
                  Vector2D(m_radius, m_height);
-    return q.Max().Norm() + std::min(q.MaxComponent(), 0.0);
+    double sdf = q.Max().Norm() + std::min(q.MaxComponent(), 0.0);
+    if(HasWedge()) {
+        // Intersect with the two half-planes (correct sign for a convex wedge).
+        const double phi_end = m_startphi + m_deltaphi;
+        const double d_start = std::sin(m_startphi) * point.X() - std::cos(m_startphi) * point.Y();
+        const double d_end = -std::sin(phi_end) * point.X() + std::cos(phi_end) * point.Y();
+        sdf = std::max({sdf, d_start, d_end});
+    }
+    return sdf;
 }
 
 std::pair<double, double> NuGeom::Cylinder::Intersect2Impl(const Ray &ray) const {
@@ -518,9 +539,29 @@ std::pair<double, double> NuGeom::Cylinder::Intersect2Impl(const Ray &ray) const
         tz2 = std::max(t0, t1);
     }
 
-    const double tmin = std::max(tc1, tz1);
-    const double tmax = std::min(tc2, tz2);
+    double tmin = std::max(tc1, tz1);
+    double tmax = std::min(tc2, tz2);
     if(tmin > tmax) return {inf, inf};
+
+    // Azimuthal wedge: clip by the two half-planes through the z-axis bounding
+    // [startphi, startphi+deltaphi].  Exact for a convex wedge (deltaphi <= pi),
+    // the common GDML case; a reflex wedge would need a union of two intervals.
+    if(HasWedge()) {
+        const double phi_end = m_startphi + m_deltaphi;
+        const double nx[2] = {std::sin(m_startphi), -std::sin(phi_end)};
+        const double ny[2] = {-std::cos(m_startphi), std::cos(phi_end)};
+        for(int k = 0; k < 2; ++k) { // inside half-space: n.(o + t d) <= 0
+            const double nd = nx[k] * ray.Direction().X() + ny[k] * ray.Direction().Y();
+            const double no = nx[k] * ray.Origin().X() + ny[k] * ray.Origin().Y();
+            if(nd > 1e-12)
+                tmax = std::min(tmax, -no / nd);
+            else if(nd < -1e-12)
+                tmin = std::max(tmin, -no / nd);
+            else if(no > 1e-9)
+                return {inf, inf}; // parallel to and outside this half-plane
+        }
+        if(tmin > tmax) return {inf, inf};
+    }
     return {tmin, tmax};
 }
 

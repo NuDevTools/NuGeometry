@@ -242,21 +242,31 @@ class Cylinder : public Shape, RegistrableShape<Cylinder> {
     ///@param height: The height of the cylinder
     ///@param rot: The rotation matrix of the cylinder
     ///@param trans: The translation of the cylinder from the origin
+    /// @param startphi,deltaphi  azimuthal wedge in radians (default = full 2π).
+    ///        A wedge with deltaphi < 2π is cut by two half-planes through the
+    ///        z-axis; this is exact for a convex wedge (deltaphi ≤ π).
     Cylinder(double radius = 1, double height = 1, const Rotation3D &rotation = Rotation3D(),
-             const Translation3D &translation = Translation3D())
-        : Shape(rotation, translation), m_radius{radius}, m_height{height} {}
+             const Translation3D &translation = Translation3D(), double startphi = 0.0,
+             double deltaphi = 2.0 * M_PI)
+        : Shape(rotation, translation), m_radius{radius}, m_height{height}, m_startphi{startphi},
+          m_deltaphi{deltaphi} {}
 
     static std::string Name() { return "tube"; }
     static std::unique_ptr<Shape> Construct(const pugi::xml_node &node);
 
     BoundingBox GetBoundingBox() const override;
     double SignedDistance(const Vector3D &) const override;
-    double Volume() const override { return m_radius * m_radius * 2.0 * m_height * M_PI; }
+    double Volume() const override {
+        return m_radius * m_radius * m_height * m_deltaphi; // (πr²)·(2h)·(Δφ/2π)
+    }
 
   private:
     std::pair<double, double> Intersect2Impl(const Ray &) const override;
+    bool HasWedge() const { return m_deltaphi < 2.0 * M_PI - 1e-9; }
     double m_radius;
     double m_height;
+    double m_startphi;
+    double m_deltaphi;
 };
 
 /// zplanes for defining polyhedra
