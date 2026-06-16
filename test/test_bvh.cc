@@ -5,6 +5,7 @@
 #include "geom/Element.hh"
 #include "geom/LineSegment.hh"
 #include "geom/Material.hh"
+#include "geom/Parser.hh"
 #include "geom/Ray.hh"
 #include "geom/Shape.hh"
 #include "geom/Transform3D.hh"
@@ -1603,4 +1604,75 @@ TEST_CASE("GetLineSegments: AABB-hit shape-miss daughter - no infinite segment",
     for(const auto &s : segs)
         if(s.GetMaterial().Name() == "Air") air_len += s.Length();
     CHECK_THAT(air_len, Catch::WithinAbs(20.0, 1e-3));
+}
+
+// ---------------------------------------------------------------------------
+// Regression: daughter_fg world->local composition order.
+//
+// `daughter_fg` must be `m_transform * from_global` (apply from_global, the
+// world->parent map, first, then m_transform, the parent->local map).  Writing
+// it as `from_global * m_transform` reverses the order; translations commute so
+// the bug stays hidden until a *rotated* ancestor sits above a deeply-nested
+// daughter.  In the real ND geometry that was volHalfDetector_R (rotated) ->
+// volFieldcage -> volLAr, where the traversal missed the rotated daughter's
+// frame and reported ~5 m of the LAr active volume (volTPCActive) as the G10
+// shell -- found by comparing against ROOT's TGeoNavigator.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("Transform3D composition order (world->local)", "[BVH][transform]") {
+    NuGeom::Translation3D from_global(10, 5, -3); // world -> parent
+    NuGeom::RotationZ3D m_transform(M_PI / 2);    // parent -> local
+    NuGeom::Vector3D p(2, 1, 4);
+
+    // world -> local applies from_global first, then m_transform.
+    auto expected = m_transform.Apply(from_global.Apply(p));
+    auto correct = (m_transform * from_global).Apply(p); // the order daughter_fg uses
+    CHECK_THAT((correct - expected).Norm(), Catch::WithinAbs(0.0, 1e-12));
+
+    // The reversed order is a genuinely different transform (so the bug is real,
+    // not a no-op): with a rotation present it must not coincide.
+    auto reversed = (from_global * m_transform).Apply(p);
+    CHECK((reversed - expected).Norm() > 1.0);
+}
+
+TEST_CASE("GetLineSegments TPC traversal matches containment (rotated exact-fill)", "[BVH]") {
+    // Regression for the daughter_fg world->local composition order on the real
+    // ND geometry.  The chain volArgonColumn -> volInnerDetector(G10) ->
+    // volHalfDetector_R(G10, ROTATED) -> volFieldcage(G10) -> volLAr(LAr) ... ->
+    // volTPCActive(LAr) is an exact-fill stack with a rotated half-detector.
+    // With daughter_fg = from_global * m_transform (wrong order) the rotated
+    // daughter's frame is grossly wrong, the descent skips it, and ~5 m of the
+    // LAr active volume is reported as the G10 shell (found via ROOT's
+    // TGeoNavigator).  FindMaterial walks per-volume transforms and is immune to
+    // the daughter_fg bug, so it is a valid oracle; require that the traversal
+    // agrees with it and that the LAr crossing is metres, not centimetres.
+    const std::string gdml = std::string(NUGEOM_SOURCE_DIR) + "/nd_hall_with_lar_tms_nosand.gdml";
+    NuGeom::GDMLParser parse(gdml);
+    auto world = parse.GetWorld();
+
+    // Rays through the rotated half-detector's TPC (ray 7 from the ROOT
+    // navigator comparison is x=121, plus two neighbours).
+    const std::array<NuGeom::Vector3D, 3> origins = {NuGeom::Vector3D{121.0117, -173.973, -29999},
+                                                     NuGeom::Vector3D{121.0117, -43.461, -29999},
+                                                     NuGeom::Vector3D{121.0117, 87.05, -29999}};
+
+    bool saw_metres_of_lar = false;
+    for(const auto &o : origins) {
+        NuGeom::Ray ray{o, {0, 0, 1}, 1.0};
+        auto segs = world.GetLineSegments(ray);
+        double lar_len = 0;
+        for(const auto &s : segs) {
+            auto mid = s.Start() + 0.5 * (s.End() - s.Start());
+            INFO("origin y=" << o.Y() << " segment '" << s.GetMaterial().Name() << "' z=["
+                             << s.Start().Z() << "," << s.End().Z() << "] vs containment '"
+                             << world.FindMaterial(mid).Name() << "'");
+            // Traversal material must match point containment everywhere (a >1 mm
+            // segment that disagrees is a real traversal error, not a grazing
+            // artifact).
+            if(s.Length() > 0.1) CHECK(s.GetMaterial().Name() == world.FindMaterial(mid).Name());
+            if(s.GetMaterial().Name() == "LAr") lar_len += s.Length();
+        }
+        if(lar_len > 400.0) saw_metres_of_lar = true; // ~523 cm correct; ~45 cm with the bug
+    }
+    CHECK(saw_metres_of_lar); // the LAr active target must be entered, not smeared into G10
 }

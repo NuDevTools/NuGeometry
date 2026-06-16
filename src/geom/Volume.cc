@@ -229,8 +229,13 @@ void PhysicalVolume::GetLineSegments(const Ray &in_ray, std::vector<LineSegment>
     static constexpr double eps = 1e-8;
     static constexpr size_t kMaxIter = 100000;
     auto current_ray = in_ray;
-    // from_global for daughters: world → this PV's local frame.
-    const auto daughter_fg = from_global * m_transform;
+    // from_global for daughters: world → this PV's local frame.  Composition
+    // order matters: world->local applies from_global (world->parent) first,
+    // then m_transform (parent->local), i.e. m_transform ∘ from_global.  With
+    // operator* defined as (A*B).Apply(p) == A.Apply(B.Apply(p)), that is
+    // m_transform * from_global.  (Translations commute so this was latent until
+    // a rotated, deeply-nested placement like volHalfDetector_R exposed it.)
+    const auto daughter_fg = m_transform * from_global;
 
     // The global ray direction is invariant for the whole traversal, so reuse
     // its precomputed inverse instead of redividing on every reconstruction.
@@ -377,7 +382,7 @@ void PhysicalVolume::CollectIntervals(const Ray &world_ray, const Transform3D &f
     }
     std::vector<size_t> hits;
     m_bvh->CollectHits(local, hits); // daughters' parent-frame AABBs live in `local`'s frame
-    const Transform3D daughter_fg = from_global * m_transform;
+    const Transform3D daughter_fg = m_transform * from_global; // see GetLineSegments for order
     for(size_t idx : hits) // children clipped to THIS volume's [lo, hi]
         m_own_daughters[idx]->CollectIntervals(world_ray, daughter_fg, depth + 1, lo, hi, events);
 }
