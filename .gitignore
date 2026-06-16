@@ -18,3 +18,8 @@ tools/root_segments.txt
 
 # ROOT cross-check (tools/root_xcheck.py) generated outputs
 tools/xcheck_work/
+
+# ROOT ACLiC compile byproducts of check_overlaps_root.C
+tools/*_C.d
+tools/*_C.so
+tools/*_C_ACLiC_dict_rdict.pcm
