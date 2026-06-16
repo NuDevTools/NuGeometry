@@ -20,6 +20,7 @@ struct IntervalEvent {
     int delta;
     int depth;
     const Material *material;
+    const PhysicalVolume *volume; ///< owning volume (for diagnostics)
 };
 
 class LogicalVolume {

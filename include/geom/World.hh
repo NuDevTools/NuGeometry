@@ -43,6 +43,8 @@ class World {
         Vector3D start, end;
         std::string sweep_material;     ///< material the sweep assigned
         std::string contained_material; ///< material at the segment midpoint by containment
+        std::string sweep_volume;       ///< volume the sweep selected (deepest active)
+        std::string contained_volume;   ///< volume containing the midpoint (placement order)
     };
     /// Run the sweep and flag every segment whose midpoint material disagrees
     /// with the containment oracle.  Logs a warning per discrepancy (likely a
@@ -65,6 +67,9 @@ class World {
 
     /// Return the material at a world-frame point by walking the volume hierarchy.
     Material FindMaterial(const Vector3D &point) const;
+    /// Return the name of the deepest volume containing a world-frame point
+    /// (placement order resolves overlaps).  Empty if the point is outside.
+    std::string FindVolume(const Vector3D &point) const;
 
     /// Voxelized grid of material indices.
     struct VoxelGrid {

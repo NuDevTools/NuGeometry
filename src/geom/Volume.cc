@@ -367,8 +367,8 @@ void PhysicalVolume::CollectIntervals(const Ray &world_ray, const Transform3D &f
     if(lo >= hi) return; // no overlap with the mother -> this volume does not apply here
 
     const Material &mat = m_volume->GetMaterial();
-    events.push_back({lo, +1, depth, &mat});
-    events.push_back({hi, -1, depth, &mat});
+    events.push_back({lo, +1, depth, &mat, this});
+    events.push_back({hi, -1, depth, &mat, this});
 
     if(m_own_daughters.empty()) return;
     if(!m_bvh) {

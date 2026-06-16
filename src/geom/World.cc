@@ -196,20 +196,54 @@ std::vector<NuGeom::LineSegment> World::GetLineSegmentsSweep(const Ray &ray) con
 
 std::vector<World::SweepOverlap> World::CheckSweepConsistency(const Ray &ray, bool warn) const {
     std::vector<SweepOverlap> out;
-    const auto segs = GetLineSegmentsSweep(ray);
-    for(const auto &s : segs) {
-        // Midpoint material per the hierarchical containment oracle (placement
-        // order resolves overlaps — the sequential traversal's semantics).
-        const Vector3D mid = s.Start() + 0.5 * (s.End() - s.Start());
-        const Material truth = FindMaterial(mid);
-        if(truth.Name() != s.GetMaterial().Name()) {
-            out.push_back({s.Start(), s.End(), s.GetMaterial().Name(), truth.Name()});
-            if(warn)
-                NuGeom::Log().warn(
-                    "Sweep/containment mismatch (possible GDML overlap or non-nested "
-                    "volume): z=[{:.4f}, {:.4f}] sweep='{}' but containment='{}'",
-                    s.Start().Z(), s.End().Z(), s.GetMaterial().Name(), truth.Name());
+    if(!m_volume) return out;
+
+    // Collect + sweep with volume tracking (mirrors GetLineSegmentsSweep, but
+    // keeps the deepest-active *volume* so disagreements can name the culprits).
+    std::vector<NuGeom::IntervalEvent> events;
+    constexpr double inf = std::numeric_limits<double>::infinity();
+    m_root_pv->CollectIntervals(ray, NuGeom::Transform3D{}, 0, 0.0, inf, events);
+    if(events.empty()) return out;
+    std::sort(
+        events.begin(), events.end(),
+        [](const NuGeom::IntervalEvent &a, const NuGeom::IntervalEvent &b) { return a.t < b.t; });
+
+    std::map<int, const NuGeom::IntervalEvent *> active; // depth -> entering event
+    const NuGeom::IntervalEvent *cur = nullptr;
+    double seg_start = 0.0;
+    const size_t n = events.size();
+    for(size_t i = 0; i < n;) {
+        const double t = events[i].t;
+        for(; i < n && events[i].t == t; ++i) {
+            const auto &e = events[i];
+            if(e.delta > 0)
+                active[e.depth] = &e;
+            else {
+                auto it = active.find(e.depth);
+                if(it != active.end() && it->second->material == e.material) active.erase(it);
+            }
         }
+        if(cur && t > seg_start) {
+            const Vector3D start = ray.Propagate(seg_start), end = ray.Propagate(t);
+            if((end - start).Norm() >= 1e-4) { // ignore prune-threshold slivers
+                const Vector3D mid = start + 0.5 * (end - start);
+                const std::string truth_mat = FindMaterial(mid).Name();
+                if(truth_mat != cur->material->Name()) {
+                    const std::string sweep_vol = cur->volume ? cur->volume->Name() : "";
+                    const std::string truth_vol = FindVolume(mid);
+                    out.push_back(
+                        {start, end, cur->material->Name(), truth_mat, sweep_vol, truth_vol});
+                    if(warn)
+                        NuGeom::Log().warn("Sweep/containment mismatch (possible GDML overlap): "
+                                           "z=[{:.3f}, {:.3f}] "
+                                           "sweep='{}'({}) but containment='{}'({})",
+                                           start.Z(), end.Z(), cur->material->Name(), sweep_vol,
+                                           truth_mat, truth_vol);
+                }
+            }
+        }
+        seg_start = t;
+        cur = active.empty() ? nullptr : active.rbegin()->second;
     }
     return out;
 }
@@ -294,6 +328,24 @@ NuGeom::Material World::FindMaterial(const Vector3D &point) const {
     if(!m_volume) return Material{};
     if(m_volume->GetShape()->SignedDistance(point) > 0) return Material{}; // outside world
     return find_material_recursive(point, m_root_pv->Daughters(), m_volume->GetMaterial());
+}
+
+static std::string
+find_volume_recursive(const NuGeom::Vector3D &local_point,
+                      const std::vector<std::shared_ptr<NuGeom::PhysicalVolume>> &daughters,
+                      const std::string &parent_name) {
+    for(const auto &pv : daughters) {
+        if(pv->SignedDistance(local_point) <= 0) {
+            auto child_point = pv->GetTransform().Apply(local_point);
+            return find_volume_recursive(child_point, pv->Daughters(), pv->Name());
+        }
+    }
+    return parent_name;
+}
+
+std::string World::FindVolume(const Vector3D &point) const {
+    if(!m_volume || m_volume->GetShape()->SignedDistance(point) > 0) return "";
+    return find_volume_recursive(point, m_root_pv->Daughters(), m_volume->Name());
 }
 
 // ---------------------------------------------------------------------------

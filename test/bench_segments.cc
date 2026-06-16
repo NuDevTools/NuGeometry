@@ -150,8 +150,8 @@ TEST_CASE("Sweep overlap scan", "[.][overlapscan]") {
         auto regions = world.CheckSweepConsistency(ray, /*warn=*/false);
         if(!regions.empty()) ++rays_with_overlap;
         for(const auto &r : regions) {
-            auto &s =
-                sigs[r.sweep_material + " (sweep) vs " + r.contained_material + " (contained)"];
+            auto &s = sigs[r.sweep_volume + " [" + r.sweep_material + "] (sweep) vs " +
+                           r.contained_volume + " [" + r.contained_material + "] (contained)"];
             if(s.count == 0) {
                 s.ex_z0 = r.start.Z();
                 s.ex_z1 = r.end.Z();
