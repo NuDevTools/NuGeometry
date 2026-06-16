@@ -304,3 +304,23 @@ TGeoNavigator: 499 -> **500/500**.  Full unit suite passes; sweep still equals s
 
 **The geometry traversal now agrees with ROOT ray-for-ray on the ND geometry, via the default
 boundary-sweep that is ~1.9x faster than the sequential traversal.**
+
+## ROOT cross-check (local tool, 2026-06-16)
+
+`tools/root_xcheck.py` validates the traversal against ROOT's TGeoNavigator ray-for-ray on a set of
+GDML geometries (kept a LOCAL test for now -- the DUNE GDMLs are 10s of MB and not committed).
+
+How it works: the hidden `[.][xcheck]` test (env NUGEOM_XCHECK_GDML/_OUT/_NRAYS, optional _VOLUME)
+emits rays + our default (sweep) segments for a geometry; `tools/check_overlaps_root.C`'s
+`navigate_rays()` steps ROOT's TGeoNavigator over the same rays; the orchestrator diffs them after the
+same prune/merge and exits non-zero on any disagreement.
+
+Run (needs ROOT on PATH or $ROOT_EXE):
+```
+cmake -B build -DENABLE_TESTING=ON && cmake --build build -j
+ROOT_EXE=/usr/bin/root.exe python3 tools/root_xcheck.py            # all *.gdml in repo root
+ROOT_EXE=/usr/bin/root.exe python3 tools/root_xcheck.py --nrays 150 nd_hall_with_lar_tms_nosand.gdml
+```
+Result 2026-06-16: **all 12 DUNE GDMLs (SimpleBoxes, nd_hall LAr/TMS/GAr/GArLite variants, SAND
+STT/DRIFT up to 74 MB) match ROOT 150/150 each** (~93 s total).  Promote to a CI job (e.g. a
+`rootproject/root` container) once the geometries live somewhere CI can fetch them (git-LFS / data store).

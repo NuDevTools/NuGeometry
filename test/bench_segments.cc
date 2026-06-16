@@ -8,9 +8,11 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <random>
 
 namespace {
@@ -337,4 +339,73 @@ TEST_CASE("Emit all benchmark rays + sequential for ROOT compare", "[.][navall]"
         fs << "\n";
     }
     std::cerr << "  Wrote 500 rays + sequential segments\n";
+}
+
+// Generic ROOT cross-check emitter (used by the CI gate via tools/root_xcheck.py).
+// Env: NUGEOM_XCHECK_GDML (geometry), NUGEOM_XCHECK_OUT (output prefix),
+//      NUGEOM_XCHECK_VOLUME (optional volume whose transverse bbox to sample over;
+//      defaults to the world box), NUGEOM_XCHECK_NRAYS (default 600).
+// Writes <prefix>_rays.txt (ox oy oz dx dy dz, unit dir) and <prefix>_seg.txt
+// ("rayIndex  len:mat ..."), using the *default* traversal (the boundary-sweep).
+// A matching ROOT TGeoNavigator pass + compare_segments.py form the gate.
+TEST_CASE("ROOT cross-check emitter", "[.][xcheck]") {
+    const char *gdml = std::getenv("NUGEOM_XCHECK_GDML");
+    const char *out = std::getenv("NUGEOM_XCHECK_OUT");
+    REQUIRE(gdml != nullptr);
+    REQUIRE(out != nullptr);
+    const char *vol_env = std::getenv("NUGEOM_XCHECK_VOLUME");
+    const char *nrays_env = std::getenv("NUGEOM_XCHECK_NRAYS");
+    const size_t nrays = nrays_env ? std::strtoul(nrays_env, nullptr, 10) : 600;
+
+    NuGeom::GDMLParser parse(gdml);
+    auto world = parse.GetWorld();
+    auto box = world.GetWorldBox();
+
+    // Transverse sampling window.  Default: the xy bbox enclosing all placed
+    // volumes (the detector "content" envelope) so we sample where the geometry
+    // actually is, not the (often vastly larger) world box.  A named volume's
+    // bbox can be requested instead.  Angled rays from the world -z face still
+    // sweep across the whole geometry, exercising far-off structure too.
+    double xlo = box.min.X(), xhi = box.max.X(), ylo = box.min.Y(), yhi = box.max.Y();
+    const auto vbounds = world.GetVolumeBounds(8);
+    if(vol_env && vol_env[0]) {
+        for(const auto &vb : vbounds)
+            if(vb.name == vol_env) {
+                xlo = vb.bb.min.X();
+                xhi = vb.bb.max.X();
+                ylo = vb.bb.min.Y();
+                yhi = vb.bb.max.Y();
+                break;
+            }
+    } else if(!vbounds.empty()) {
+        xlo = ylo = std::numeric_limits<double>::infinity();
+        xhi = yhi = -std::numeric_limits<double>::infinity();
+        for(const auto &vb : vbounds) {
+            xlo = std::min(xlo, vb.bb.min.X());
+            xhi = std::max(xhi, vb.bb.max.X());
+            ylo = std::min(ylo, vb.bb.min.Y());
+            yhi = std::max(yhi, vb.bb.max.Y());
+        }
+    }
+    const double z0 = box.min.Z() + 1.0;
+
+    std::mt19937 rng(1234);
+    std::uniform_real_distribution<double> dx(xlo, xhi), dy(ylo, yhi), da(-0.15, 0.15);
+    std::ofstream fr(std::string(out) + "_rays.txt"), fs(std::string(out) + "_seg.txt");
+    fr << std::setprecision(12);
+    fs << std::setprecision(10);
+    for(size_t i = 0; i < nrays; ++i) {
+        NuGeom::Vector3D o(dx(rng), dy(rng), z0);
+        NuGeom::Vector3D d =
+            (i % 2 == 0) ? NuGeom::Vector3D(0, 0, 1) : NuGeom::Vector3D(da(rng), da(rng), 1);
+        NuGeom::Ray ray(o, d, 1.0);
+        const auto &u = ray.Direction();
+        fr << o.X() << " " << o.Y() << " " << o.Z() << " " << u.X() << " " << u.Y() << " " << u.Z()
+           << "\n";
+        auto segs = world.GetLineSegments(ray); // default traversal (sweep)
+        fs << i;
+        for(const auto &s : segs) fs << "  " << s.Length() << ":" << s.GetMaterial().Name();
+        fs << "\n";
+    }
+    std::cerr << "  [xcheck] wrote " << nrays << " rays for " << gdml << "\n";
 }

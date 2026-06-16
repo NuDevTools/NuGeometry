@@ -15,3 +15,6 @@ build*
 tools/compare_rays.txt
 tools/nugeom_segments.txt
 tools/root_segments.txt
+
+# ROOT cross-check (tools/root_xcheck.py) generated outputs
+tools/xcheck_work/
