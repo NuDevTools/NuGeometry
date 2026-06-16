@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <limits>
 #include <stdexcept>
+#include <vector>
 
 NuGeom::Location NuGeom::Shape::Contains(const Vector3D &point) const {
     double dist = SignedDistance(point);
@@ -68,6 +69,90 @@ double NuGeom::Shape::Intersect(const Ray &in_ray) const {
 std::pair<double, double> NuGeom::Shape::Intersect2(const Ray &in_ray) const {
     if(identity_transform) return Intersect2Impl(in_ray);
     return Intersect2Impl(TransformRay(in_ray));
+}
+
+std::vector<std::pair<double, double>> NuGeom::Shape::IntersectAll(const Ray &in_ray) const {
+    if(identity_transform) return IntersectAllImpl(in_ray);
+    return IntersectAllImpl(TransformRay(in_ray));
+}
+
+// Default: a convex shape has a single solid span — its Intersect2 interval.
+std::vector<std::pair<double, double>> NuGeom::Shape::IntersectAllImpl(const Ray &ray) const {
+    const auto [t1, t2] = Intersect2Impl(ray);
+    if(std::isfinite(t2) && t2 > 0.0) return {{t1, t2}};
+    return {};
+}
+
+// --- interval-set algebra on sorted, disjoint [lo,hi) lists -----------------
+namespace {
+using IV = std::vector<std::pair<double, double>>;
+constexpr double kIVeps = 1e-9;
+
+IV iv_normalize(IV v) { // sort by start, drop empties, coalesce touching/overlapping
+    std::sort(v.begin(), v.end());
+    IV out;
+    for(const auto &iv : v) {
+        if(iv.second <= iv.first) continue;
+        if(!out.empty() && iv.first <= out.back().second + kIVeps)
+            out.back().second = std::max(out.back().second, iv.second);
+        else
+            out.push_back(iv);
+    }
+    return out;
+}
+IV iv_union(const IV &a, const IV &b) {
+    IV c = a;
+    c.insert(c.end(), b.begin(), b.end());
+    return iv_normalize(std::move(c));
+}
+IV iv_intersect(const IV &a, const IV &b) { // both sorted+disjoint
+    IV out;
+    size_t i = 0, j = 0;
+    while(i < a.size() && j < b.size()) {
+        const double lo = std::max(a[i].first, b[j].first);
+        const double hi = std::min(a[i].second, b[j].second);
+        if(hi > lo) out.push_back({lo, hi});
+        (a[i].second < b[j].second) ? ++i : ++j;
+    }
+    return out;
+}
+IV iv_subtract(const IV &b, const IV &a) { // b - a; a sorted+disjoint
+    IV out;
+    for(const auto &bi : b) {
+        double cur = bi.first;
+        for(const auto &ai : a) {
+            if(ai.second <= cur || ai.first >= bi.second) continue;
+            if(ai.first > cur) out.push_back({cur, ai.first});
+            cur = std::max(cur, ai.second);
+            if(cur >= bi.second) break;
+        }
+        if(cur < bi.second) out.push_back({cur, bi.second});
+    }
+    return iv_normalize(std::move(out));
+}
+} // namespace
+
+std::vector<std::pair<double, double>>
+NuGeom::CombinedShape::IntersectAllImpl(const Ray &ray) const {
+    const IV a = m_left->IntersectAll(ray);
+    const IV b = m_right->IntersectAll(ray);
+    IV r;
+    switch(m_op) {
+    case ShapeBinaryOp::kUnion:
+        r = iv_union(a, b);
+        break;
+    case ShapeBinaryOp::kIntersect:
+        r = iv_intersect(a, b);
+        break;
+    case ShapeBinaryOp::kSubtraction:
+        r = iv_subtract(b, a); // right - left
+        break;
+    }
+    // Keep only forward spans (exit > 0); the first may still start at t < 0.
+    IV out;
+    for(const auto &iv : r)
+        if(iv.second > 0.0) out.push_back(iv);
+    return out;
 }
 
 // TODO: Do this correctly!!!!

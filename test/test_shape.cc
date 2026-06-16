@@ -391,6 +391,20 @@ TEST_CASE("CombinedShape::Intersect2 returns the forward wall (two-wall subtract
     auto first = frame.Intersect2(up_ray);
     CHECK(std::abs(first.first - 5.0) < 1e-6);  // first wall at z=-5 -> t=5
     CHECK(std::abs(first.second - 7.0) < 1e-6); // exits z=-3 -> t=7
+
+    // IntersectAll must return BOTH walls (Intersect2 returns only the first).
+    auto all = frame.IntersectAll(up_ray);
+    REQUIRE(all.size() == 2);
+    CHECK(std::abs(all[0].first - 5.0) < 1e-6); // wall 1: z=[-5,-3] -> t=[5,7]
+    CHECK(std::abs(all[0].second - 7.0) < 1e-6);
+    CHECK(std::abs(all[1].first - 13.0) < 1e-6); // wall 2: z=[3,5] -> t=[13,15]
+    CHECK(std::abs(all[1].second - 15.0) < 1e-6);
+
+    // From the gap (past the first wall) IntersectAll returns only the wall ahead.
+    auto fwd_all = frame.IntersectAll(gap_ray);
+    REQUIRE(fwd_all.size() == 1);
+    CHECK(std::abs(fwd_all[0].first - 3.0) < 1e-6);
+    CHECK(std::abs(fwd_all[0].second - 5.0) < 1e-6);
 }
 
 // ---------------------------------------------------------------------------

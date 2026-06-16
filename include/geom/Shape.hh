@@ -50,6 +50,14 @@ class Shape {
     /// {+∞, +∞} means the ray misses entirely.
     std::pair<double, double> Intersect2(const Ray &in_ray) const;
 
+    /// All solid [enter, exit] intervals along the ray with exit > 0, sorted by
+    /// entry (the first entry may be < 0 if the origin is inside).  For convex
+    /// shapes this is the single Intersect2 interval; for a non-convex
+    /// CombinedShape (e.g. a window frame with two walls along the ray) it
+    /// returns every wall.  Used by the boundary-sweep so multi-interval CSG
+    /// volumes are not collapsed to their first interval.
+    std::vector<std::pair<double, double>> IntersectAll(const Ray &in_ray) const;
+
     virtual BoundingBox GetBoundingBox() const = 0;
 
     /// Returns GetBoundingBox() transformed by this shape's own rotation/translation.
@@ -63,10 +71,12 @@ class Shape {
   protected:
     Vector3D TransformPoint(const Vector3D &) const;
     Ray TransformRay(const Ray &) const;
-    std::pair<double, double> SolveQuadratic(double, double, double) const;
 
   private:
     virtual std::pair<double, double> Intersect2Impl(const Ray &) const = 0;
+    /// Default: the single Intersect2Impl interval (correct for convex shapes).
+    /// CombinedShape/TransformedShape override to return all/forwarded intervals.
+    virtual std::vector<std::pair<double, double>> IntersectAllImpl(const Ray &ray) const;
     Transform3D m_rotation;
     Transform3D m_translation;
     bool identity_transform{false};
@@ -143,6 +153,7 @@ class CombinedShape : public Shape, RegistrableShape<CombinedShape> {
 
   private:
     std::pair<double, double> Intersect2Impl(const Ray &) const override;
+    std::vector<std::pair<double, double>> IntersectAllImpl(const Ray &) const override;
     std::shared_ptr<Shape> m_left, m_right;
     ShapeBinaryOp m_op;
     mutable double m_volume{0};
@@ -166,7 +177,12 @@ class TransformedShape : public Shape {
 
   private:
     std::pair<double, double> Intersect2Impl(const Ray &ray) const override {
-        return m_inner->Intersect2(Transform3D::ApplyRay(ray, m_transform));
+        // ApplyRayDirect applies the matrix as-is (rigid placement transforms),
+        // avoiding the per-call Decompose/Inverse that ApplyRay performs.
+        return m_inner->Intersect2(Transform3D::ApplyRayDirect(ray, m_transform));
+    }
+    std::vector<std::pair<double, double>> IntersectAllImpl(const Ray &ray) const override {
+        return m_inner->IntersectAll(Transform3D::ApplyRayDirect(ray, m_transform));
     }
     std::shared_ptr<Shape> m_inner;
     Transform3D m_transform;

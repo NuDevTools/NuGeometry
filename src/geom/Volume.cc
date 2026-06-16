@@ -361,19 +361,32 @@ void PhysicalVolume::CollectIntervals(const Ray &world_ray, const Transform3D &f
     // Ray in this volume's shape-local frame (rigid transforms preserve the ray
     // parameter t, so the local entry/exit times are world-frame distances).
     const Ray local = TransformRay(Transform3D::ApplyRayDirect(world_ray, from_global));
-    const auto [t_in, t_out] = m_volume->GetShape()->Intersect2(local);
-    if(!std::isfinite(t_out) || t_out <= 0.0) return; // misses or already behind the origin
-
-    const double enter = t_in > 0.0 ? t_in : 0.0; // t_in < 0 => origin already inside
-    // Clip this volume's interval to the parent's active window: a daughter is
-    // only "really" inside the geometry where its mother also contains the ray.
-    const double lo = std::max(enter, parent_lo);
-    const double hi = std::min(t_out, parent_hi);
-    if(lo >= hi) return; // no overlap with the mother -> this volume does not apply here
+    // IntersectAll returns every solid span -- a non-convex CSG (e.g. a window
+    // frame with two walls along the ray) has more than one, which a single
+    // Intersect2 would collapse to the first wall only.
+    const auto spans = m_volume->GetShape()->IntersectAll(local);
+    if(spans.empty()) return;
 
     const Material &mat = m_volume->GetMaterial();
-    events.push_back({lo, +1, depth, &mat, this});
-    events.push_back({hi, -1, depth, &mat, this});
+    // Emit each span clipped to the parent's active window (a daughter is only
+    // "really" inside the geometry where its mother also contains the ray), and
+    // track the overall [span_lo, span_hi] to clip descendants to.  Daughters
+    // sit inside this volume's solid (including any gap a frame leaves for them,
+    // which lies within the overall span), so the overall span is the right
+    // window to pass down.
+    double span_lo = std::numeric_limits<double>::infinity();
+    double span_hi = -std::numeric_limits<double>::infinity();
+    for(const auto &iv : spans) {
+        const double enter = iv.first > 0.0 ? iv.first : 0.0; // origin inside => from 0
+        const double lo = std::max(enter, parent_lo);
+        const double hi = std::min(iv.second, parent_hi);
+        if(lo >= hi) continue; // this span does not overlap the mother's window
+        events.push_back({lo, +1, depth, &mat, this});
+        events.push_back({hi, -1, depth, &mat, this});
+        span_lo = std::min(span_lo, lo);
+        span_hi = std::max(span_hi, hi);
+    }
+    if(span_hi <= span_lo) return; // nothing landed in the parent window
 
     if(m_own_daughters.empty()) return;
     if(!m_bvh) {
@@ -383,8 +396,9 @@ void PhysicalVolume::CollectIntervals(const Ray &world_ray, const Transform3D &f
     std::vector<size_t> hits;
     m_bvh->CollectHits(local, hits); // daughters' parent-frame AABBs live in `local`'s frame
     const Transform3D daughter_fg = m_transform * from_global; // see GetLineSegments for order
-    for(size_t idx : hits) // children clipped to THIS volume's [lo, hi]
-        m_own_daughters[idx]->CollectIntervals(world_ray, daughter_fg, depth + 1, lo, hi, events);
+    for(size_t idx : hits) // children clipped to THIS volume's overall span
+        m_own_daughters[idx]->CollectIntervals(world_ray, daughter_fg, depth + 1, span_lo, span_hi,
+                                               events);
 }
 
 NuGeom::Ray PhysicalVolume::TransformRay(const Ray &ray) const {
