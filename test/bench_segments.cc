@@ -5,8 +5,11 @@
 #include "geom/Ray.hh"
 #include "geom/World.hh"
 
+#include <array>
 #include <chrono>
 #include <cmath>
+#include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <random>
 
@@ -109,6 +112,84 @@ TEST_CASE("GetLineSegments sequential vs sweep", "[.][benchmark]") {
     timeit("sweep     ", [&](const NuGeom::Ray &r) { return world.GetLineSegmentsSweep(r); });
 
     CHECK(mismatches == 0);
+}
+
+// Emit a shared set of rays and our SEQUENTIAL (production) segments for each,
+// for comparison against ROOT's TGeoNavigator (tools/check_overlaps_root.C).
+// Writes tools/compare_rays.txt (ox oy oz dx dy dz, unit dir) and
+// tools/nugeom_segments.txt ("rayIndex  len0:mat0 len1:mat1 ...").
+TEST_CASE("Navigator comparison: emit rays + sequential segments", "[.][navcompare]") {
+    const std::string root = std::string(NUGEOM_SOURCE_DIR);
+    NuGeom::GDMLParser parse(root + "/nd_hall_with_lar_tms_nosand.gdml");
+    auto world = parse.GetWorld();
+    auto box = world.GetWorldBox();
+    auto vbounds = world.GetVolumeBounds(4);
+    double xlo = 0, xhi = 0, ylo = 0, yhi = 0;
+    for(const auto &vb : vbounds)
+        if(vb.name == "volArgonCubeDetector") {
+            xlo = vb.bb.min.X();
+            xhi = vb.bb.max.X();
+            ylo = vb.bb.min.Y();
+            yhi = vb.bb.max.Y();
+            break;
+        }
+    const double z0 = box.min.Z() + 1.0;
+
+    // Deterministic ray set: a grid of +z rays through the ArgonCube, plus a few
+    // angled ones.  Build (origin, unit-dir) pairs.
+    std::vector<std::array<double, 6>> rays;
+    const double fx[3] = {0.35, 0.5, 0.65}, fy[3] = {0.35, 0.5, 0.65};
+    for(double a : fx)
+        for(double b : fy)
+            rays.push_back({xlo + a * (xhi - xlo), ylo + b * (yhi - ylo), z0, 0, 0, 1});
+    rays.push_back({0.5 * (xlo + xhi), 0.5 * (ylo + yhi), z0, 0.1, 0.05, 1});
+    rays.push_back({0.45 * (xlo + xhi) + 0.5 * xlo, 0.5 * (ylo + yhi), z0, -0.08, 0.12, 1});
+    rays.push_back({xlo + 0.5 * (xhi - xlo), ylo + 0.4 * (yhi - ylo), z0, 0.03, -0.1, 1});
+
+    std::ofstream fr(root + "/tools/compare_rays.txt");
+    std::ofstream fs(root + "/tools/nugeom_segments.txt");
+    fr << std::setprecision(12);
+    fs << std::setprecision(10);
+    for(size_t i = 0; i < rays.size(); ++i) {
+        auto &r = rays[i];
+        NuGeom::Vector3D o(r[0], r[1], r[2]), d(r[3], r[4], r[5]);
+        NuGeom::Ray ray(o, d, 1.0); // ctor normalizes the direction
+        const auto &u = ray.Direction();
+        fr << o.X() << " " << o.Y() << " " << o.Z() << " " << u.X() << " " << u.Y() << " " << u.Z()
+           << "\n";
+        auto segs = world.GetLineSegmentsSequential(ray);
+        fs << i;
+        for(const auto &s : segs) fs << "  " << s.Length() << ":" << s.GetMaterial().Name();
+        fs << "\n";
+    }
+    std::cerr << "  Wrote " << rays.size() << " rays + sequential segments to tools/\n";
+    REQUIRE(true);
+}
+
+// For ray 7 (which the navigator comparison flags), walk our sequential
+// segments and, inside each large G10 span, query FindMaterial (our geometry's
+// point-containment) -- if it returns LAr, the geometry is right and the
+// sequential traversal is mis-assigning material.
+TEST_CASE("Navigator comparison: ray 7 traversal-vs-containment probe", "[.][nav7probe]") {
+    const std::string root = std::string(NUGEOM_SOURCE_DIR);
+    NuGeom::GDMLParser parse(root + "/nd_hall_with_lar_tms_nosand.gdml");
+    auto world = parse.GetWorld();
+    NuGeom::Vector3D o(121.0117, -173.973, -29999), d(0, 0, 1);
+    NuGeom::Ray ray(o, d, 1.0);
+    auto segs = world.GetLineSegmentsSequential(ray);
+    double z = 0; // cumulative along ray (dir is +z so z param == path length)
+    std::cerr << "  ray 7: probing FindMaterial inside large G10 spans (traversal said G10)\n";
+    for(const auto &s : segs) {
+        if(s.GetMaterial().Name() == "G10" && s.Length() > 5.0) {
+            const auto mid = s.Start() + 0.5 * (s.End() - s.Start());
+            std::cerr << "    G10 span z=[" << s.Start().Z() << ", " << s.End().Z()
+                      << "] len=" << s.Length() << "  -> FindMaterial(mid)='"
+                      << world.FindMaterial(mid).Name() << "' FindVolume='" << world.FindVolume(mid)
+                      << "'\n";
+        }
+        (void)z;
+    }
+    REQUIRE(true);
 }
 
 // Scan rays and report the distinct sweep/containment disagreement "signatures"

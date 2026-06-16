@@ -14,9 +14,17 @@
 //     (the latter catches overlaps the surface mesh misses).
 
 #include "TGeoManager.h"
+#include "TGeoMaterial.h"
+#include "TGeoNavigator.h"
+#include "TGeoNode.h"
+#include "TGeoVolume.h"
 #include "TObjArray.h"
 #include "TSystem.h"
 #include <cstdio>
+#include <fstream>
+#include <sstream>
+#include <string>
+#include <vector>
 
 void check_overlaps_root(const char *gdml_path = "nd_hall_with_lar_tms_nosand.gdml") {
     gSystem->Load("libGeom"); // ROOT geometry (TGeoManager) + GDML import
@@ -46,4 +54,52 @@ void check_overlaps_root(const char *gdml_path = "nd_hall_with_lar_tms_nosand.gd
 
     TObjArray *ov = geo->GetListOfOverlaps();
     printf("\nTotal overlaps reported by ROOT: %d\n", ov ? ov->GetEntriesFast() : 0);
+}
+
+// Step ROOT's TGeoNavigator along each ray in tools/compare_rays.txt and write
+// tools/root_segments.txt in the same "rayIndex  len:mat ..." format the
+// NuGeometry [navcompare] test emits, so the two traversals can be diffed.
+void navigate_rays(const char *gdml_path = "nd_hall_with_lar_tms_nosand.gdml",
+                   const char *rays_file = "tools/compare_rays.txt",
+                   const char *out_file = "tools/root_segments.txt") {
+    gSystem->Load("libGeom");
+    TGeoManager *geo = TGeoManager::Import(gdml_path);
+    if(!geo) {
+        printf("ERROR: could not import '%s'\n", gdml_path);
+        return;
+    }
+    std::ifstream in(rays_file);
+    if(!in) {
+        printf("ERROR: could not open '%s'\n", rays_file);
+        return;
+    }
+    std::ofstream out(out_file);
+    out.precision(10);
+
+    std::string line;
+    int idx = 0;
+    while(std::getline(in, line)) {
+        if(line.empty()) continue;
+        std::istringstream ss(line);
+        double ox, oy, oz, dx, dy, dz;
+        if(!(ss >> ox >> oy >> oz >> dx >> dy >> dz)) continue;
+
+        TGeoNavigator *nav = geo->GetCurrentNavigator();
+        if(!nav) nav = geo->AddNavigator();
+        nav->InitTrack(ox, oy, oz, dx, dy, dz);
+
+        out << idx;
+        int guard = 0;
+        while(!nav->IsOutside() && guard++ < 100000) {
+            TGeoVolume *vol = nav->GetCurrentVolume();
+            const char *mat =
+                (vol && vol->GetMaterial()) ? vol->GetMaterial()->GetName() : "UNKNOWN";
+            nav->FindNextBoundaryAndStep();
+            const double step = nav->GetStep();
+            out << "  " << step << ":" << mat;
+        }
+        out << "\n";
+        ++idx;
+    }
+    printf("Wrote %d ray segmentations to %s\n", idx, out_file);
 }

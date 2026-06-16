@@ -10,3 +10,8 @@ include/geom/System.hh
 *.png
 build*
 *.pdf
+
+# navigator-comparison generated outputs
+tools/compare_rays.txt
+tools/nugeom_segments.txt
+tools/root_segments.txt
