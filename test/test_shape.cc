@@ -447,12 +447,16 @@ TEST_CASE("Polyhedra", "[Shapes]") {
         CHECK(hex.SignedDistance({2, 0, 0}) > 0);
     }
 
-    SECTION("Point inside/outside along x near vertex") {
-        // For a hexagon with vertices at rmax=1 and startphi=0, the vertex
-        // at phi=0 is at (1, 0, 0).  Along the x-axis the face boundary
-        // passes through x=1 (the vertex), so:
-        CHECK(hex.SignedDistance({0.99, 0, 0}) < 0);
-        CHECK(hex.SignedDistance({1.01, 0, 0}) > 0);
+    SECTION("Apothem/vertex radii (GDML face-distance convention)") {
+        // GDML/ROOT polyhedra rmax=1 is the apothem (distance to the flat
+        // faces); for a hexagon (nsides=6, startphi=0) the vertex at phi=0 sits
+        // at 1/cos(30deg) ~= 1.1547, while the face midpoint (phi=30deg) is at
+        // the apothem r=1.
+        CHECK(hex.SignedDistance({1.10, 0, 0}) < 0); // within the vertex
+        CHECK(hex.SignedDistance({1.20, 0, 0}) > 0); // beyond the vertex
+        const double c = std::cos(M_PI / 6), s = std::sin(M_PI / 6);
+        CHECK(hex.SignedDistance({0.99 * c, 0.99 * s, 0}) < 0); // just inside the face
+        CHECK(hex.SignedDistance({1.01 * c, 1.01 * s, 0}) > 0); // just outside the face
     }
 
     SECTION("Intersect2 along z-axis from outside") {
@@ -480,12 +484,15 @@ TEST_CASE("Polyhedra", "[Shapes]") {
     }
 
     SECTION("GetBoundingBox") {
+        // X/Y bounds reach the corner radius rmax/cos(30deg) ~= 1.1547 (the AABB
+        // must enclose the vertices, not just the apothem rmax=1).
+        const double corner = 1.0 / std::cos(M_PI / 6);
         auto bb = hex.GetBoundingBox();
         CHECK(bb.IsValid());
-        CHECK(bb.min.X() == Approx(-1.0));
-        CHECK(bb.max.X() == Approx(1.0));
-        CHECK(bb.min.Y() == Approx(-1.0));
-        CHECK(bb.max.Y() == Approx(1.0));
+        CHECK(bb.min.X() == Approx(-corner));
+        CHECK(bb.max.X() == Approx(corner));
+        CHECK(bb.min.Y() == Approx(-corner));
+        CHECK(bb.max.Y() == Approx(corner));
         CHECK(bb.min.Z() == Approx(-1.0));
         CHECK(bb.max.Z() == Approx(1.0));
     }

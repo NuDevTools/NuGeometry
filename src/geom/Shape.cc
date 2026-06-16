@@ -674,8 +674,15 @@ NuGeom::Polyhedra::Polyhedra(double startphi, double deltaphi, size_t nsides,
     std::vector<double> phi(m_nsides);
     for(size_t i = 0; i < m_nsides; ++i) phi[i] = m_startphi + static_cast<double>(i) * dphi_side;
 
-    auto vertex = [](double r, double phi_, double z) -> Vector3D {
-        return Vector3D(r * std::cos(phi_), r * std::sin(phi_), z);
+    // GDML/Geant4/ROOT polyhedra radii are the distance to the flat FACES (the
+    // apothem); the corners sit at r / cos(half the side angle).  Place vertices
+    // at that corner radius so the faces land at the given rmax (verified
+    // against ROOT TGeoPgon: a numsides=3 rmax=4.064 prism contains points along
+    // a vertex direction out to ~8.13 = rmax/cos(60deg)).
+    const double corner_factor = 1.0 / std::cos(0.5 * dphi_side);
+    auto vertex = [corner_factor](double r, double phi_, double z) -> Vector3D {
+        const double rc = r * corner_factor;
+        return Vector3D(rc * std::cos(phi_), rc * std::sin(phi_), z);
     };
 
     double zmin = m_planes.front().z;
@@ -779,9 +786,12 @@ std::unique_ptr<NuGeom::Shape> NuGeom::Polyhedra::Construct(const pugi::xml_node
 NuGeom::BoundingBox NuGeom::Polyhedra::GetBoundingBox() const {
     double max_rmax = 0.0;
     for(const auto &p : m_planes) max_rmax = std::max(max_rmax, p.rmax);
+    // Corners reach rmax / cos(half the side angle) (see the ctor); the AABB
+    // must enclose the corners, not just the face-distance rmax.
+    const double corner = max_rmax / std::cos(0.5 * m_deltaphi / static_cast<double>(m_nsides));
     double zmin = m_planes.front().z;
     double zmax = m_planes.back().z;
-    return {Vector3D(-max_rmax, -max_rmax, zmin), Vector3D(max_rmax, max_rmax, zmax)};
+    return {Vector3D(-corner, -corner, zmin), Vector3D(corner, corner, zmax)};
 }
 
 double NuGeom::Polyhedra::SignedDistance(const Vector3D &in_point) const {
