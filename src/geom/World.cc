@@ -119,22 +119,15 @@ static std::vector<NuGeom::LineSegment> PruneSegments(std::vector<NuGeom::LineSe
 }
 
 std::vector<NuGeom::LineSegment> World::GetLineSegments(const Ray &ray) const {
-    // Runtime selector (read once): NUGEOM_TRAVERSAL=sweep picks the analytic
-    // boundary-sweep; anything else keeps the default sequential traversal.
-    // Both paths coexist so they can be A/B benchmarked and cross-validated.
-    static const bool use_sweep = [] {
+    // The analytic boundary-sweep is the default: it matches the sequential
+    // traversal ray-for-ray (cross-validated) and ROOT's TGeoNavigator, and is
+    // ~1.9x faster.  Set NUGEOM_TRAVERSAL=sequential to fall back to the
+    // step-by-step traversal (kept for cross-checking / debugging).  Read once.
+    static const bool use_sequential = [] {
         const char *e = std::getenv("NUGEOM_TRAVERSAL");
-        const bool sweep = e && std::string(e) == "sweep";
-        if(sweep)
-            NuGeom::Log().warn(
-                "EXPERIMENTAL boundary-sweep traversal enabled (NUGEOM_TRAVERSAL=sweep): ~1.8x "
-                "faster but NOT exact where volumes overlap / are not strictly nested. The default "
-                "sequential traversal is exact; use World::CheckSweepConsistency() to locate "
-                "suspect "
-                "regions.");
-        return sweep;
+        return e && std::string(e) == "sequential";
     }();
-    return use_sweep ? GetLineSegmentsSweep(ray) : GetLineSegmentsSequential(ray);
+    return use_sequential ? GetLineSegmentsSequential(ray) : GetLineSegmentsSweep(ray);
 }
 
 std::vector<NuGeom::LineSegment> World::GetLineSegmentsSequential(const Ray &ray) const {

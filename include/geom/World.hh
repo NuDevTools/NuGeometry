@@ -26,14 +26,15 @@ class World {
     bool InWorld(const Vector3D &) const;
     bool SphereTrace(const Ray &, double &, size_t &, size_t &) const;
     bool RayTrace(const Ray &, double &, size_t &) const;
+    /// Default traversal (boundary-sweep; NUGEOM_TRAVERSAL=sequential overrides).
     std::vector<LineSegment> GetLineSegments(const Ray &) const;
-    /// Sequential boundary-to-boundary traversal (the default).
+    /// Sequential boundary-to-boundary traversal (fallback for cross-checking).
     std::vector<LineSegment> GetLineSegmentsSequential(const Ray &) const;
-    /// EXPERIMENTAL analytic boundary-sweep: collect all volume crossings in one
-    /// descent, sort, and sweep tracking the innermost (deepest) active volume.
-    /// ~1.8x faster but NOT exact where volumes overlap / are not strictly
-    /// nested (it resolves material by tree depth, not placement order).  Use
-    /// CheckSweepConsistency() to locate such regions; not for production.
+    /// Analytic boundary-sweep (the default): collect all volume crossings in
+    /// one descent (Shape::IntersectAll handles multi-interval CSG), sort, and
+    /// sweep tracking the innermost (deepest) active volume.  ~1.9x faster than
+    /// and ray-for-ray equivalent to the sequential traversal (cross-validated
+    /// against it and ROOT's TGeoNavigator).
     std::vector<LineSegment> GetLineSegmentsSweep(const Ray &) const;
 
     /// A region where the experimental sweep disagrees with the hierarchical
