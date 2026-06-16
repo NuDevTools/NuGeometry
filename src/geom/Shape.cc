@@ -28,7 +28,8 @@ NuGeom::Vector3D NuGeom::Shape::TransformPoint(const Vector3D &point) const {
 NuGeom::Ray NuGeom::Shape::TransformRay(const Ray &in_ray) const {
     auto origin = m_rotation.Apply(m_translation.Apply(in_ray.Origin()));
     auto direction = m_rotation.Apply(in_ray.Direction());
-    return {origin, direction, in_ray.POT()};
+    // Rotation preserves the unit norm; skip re-normalization.
+    return {origin, direction, in_ray.POT(), false};
 }
 
 NuGeom::BoundingBox NuGeom::Shape::GetTransformedBoundingBox() const {
@@ -65,19 +66,8 @@ double NuGeom::Shape::Intersect(const Ray &in_ray) const {
 }
 
 std::pair<double, double> NuGeom::Shape::Intersect2(const Ray &in_ray) const {
-    auto ray = identity_transform ? in_ray : TransformRay(in_ray);
-    return Intersect2Impl(ray);
-}
-
-std::pair<double, double> NuGeom::Shape::SolveQuadratic(double a, double b, double c) const {
-    const double det = b * b - 4 * a * c;
-    if(det < 0)
-        return {std::numeric_limits<double>::infinity(), std::numeric_limits<double>::infinity()};
-    double t1 = 2 * c / (-b - sqrt(det));
-    double t2 = 2 * c / (-b + sqrt(det));
-    t1 = t1 > 0 ? t1 : std::numeric_limits<double>::infinity();
-    t2 = t2 > 0 ? t2 : std::numeric_limits<double>::infinity();
-    return {t1, t2};
+    if(identity_transform) return Intersect2Impl(in_ray);
+    return Intersect2Impl(TransformRay(in_ray));
 }
 
 // TODO: Do this correctly!!!!
@@ -150,15 +140,20 @@ std::pair<double, double> NuGeom::CombinedShape::Intersect2Impl(const Ray &ray) 
         return false; // unreachable
     };
 
-    // Walk all four boundary times sorted; find entry and exit transitions.
-    // t_enter = -inf when the origin is already inside (starts_inside).
+    // Walk the boundary times sorted; find the first FORWARD entry/exit pair.
+    // Only t > 0 crossings count: a non-convex combined shape (e.g. a window
+    // frame with two walls along the ray) has earlier crossings *behind* the
+    // origin once the ray is past the first wall; including them would return
+    // that behind-origin interval and hide the next wall ahead.  The origin's
+    // own inside/outside state is captured by inside(0) (t_enter = -inf when
+    // already inside).
     double t_enter = inside(0.0) ? -inf : inf;
     double t_exit = inf;
 
     double times[4] = {a_in, a_out, b_in, b_out};
     std::sort(times, times + 4);
     for(const double t : times) {
-        if(!std::isfinite(t)) continue;
+        if(!std::isfinite(t) || t <= 0.0) continue;
         const bool was_inside = inside(t - eps);
         const bool now_inside = inside(t + eps);
         if(!was_inside && now_inside && t_enter == inf) t_enter = t;

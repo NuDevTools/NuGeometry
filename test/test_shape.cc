@@ -368,6 +368,31 @@ TEST_CASE("CombinedShape with TransformedShape second operand", "[Shapes]") {
     }
 }
 
+TEST_CASE("CombinedShape::Intersect2 returns the forward wall (two-wall subtraction)", "[Shapes]") {
+    // A z-frame: a big cube minus a central z-slab leaves two walls, at z in
+    // [-5,-3] and [3,5].  A ray that starts in the gap (already past the first
+    // wall) must report the wall AHEAD, not the one behind it.  Regression for
+    // CombinedShape::Intersect2 walking boundary crossings behind the origin,
+    // which made the exit-side composite-window steel disappear in the ND
+    // geometry (the ray re-entering the second wall was never found).
+    auto big = std::make_shared<NuGeom::Box>(NuGeom::Vector3D{10, 10, 10}); // [-5,5]^3
+    auto slab = std::make_shared<NuGeom::Box>(NuGeom::Vector3D{12, 12, 6}); // central z in [-3,3]
+    NuGeom::CombinedShape frame(slab, big, NuGeom::ShapeBinaryOp::kSubtraction); // big - slab
+
+    // Origin in the gap (inside the removed slab => outside the frame), +z.
+    NuGeom::Ray gap_ray({0, 0, 0}, {0, 0, 1}, 1.0);
+    auto fwd = frame.Intersect2(gap_ray);
+    CHECK(fwd.first > 0.0);                   // the forward wall, never a behind-origin one
+    CHECK(std::abs(fwd.first - 3.0) < 1e-6);  // enters the second wall at z=3
+    CHECK(std::abs(fwd.second - 5.0) < 1e-6); // exits at z=5
+
+    // A ray fully upstream still finds the first wall.
+    NuGeom::Ray up_ray({0, 0, -10}, {0, 0, 1}, 1.0);
+    auto first = frame.Intersect2(up_ray);
+    CHECK(std::abs(first.first - 5.0) < 1e-6);  // first wall at z=-5 -> t=5
+    CHECK(std::abs(first.second - 7.0) < 1e-6); // exits z=-3 -> t=7
+}
+
 // ---------------------------------------------------------------------------
 // Polyhedra
 // ---------------------------------------------------------------------------
