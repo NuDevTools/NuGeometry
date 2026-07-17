@@ -30,7 +30,7 @@ endif()
 CPMAddPackage(
     NAME pugixml
     GITHUB_REPOSITORY zeux/pugixml
-    VERSION 1.11.4
+    VERSION 1.16
 )
 
 # Version floors so find_package rejects an older parallel install (e.g. an
