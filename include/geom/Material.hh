@@ -14,8 +14,8 @@ class Material {
         : m_name{name}, m_density{density}, m_ncomponents{ncomponents} {}
 
     size_t NComponents() const { return m_ncomponents; }
-    std::vector<Element> Elements() const { return m_elements; }
-    std::vector<double> MassFractions() const { return m_fractions; }
+    const std::vector<Element> &Elements() const { return m_elements; }
+    const std::vector<double> &MassFractions() const { return m_fractions; }
     size_t NElements() const { return m_elements.size(); }
     void AddElement(const Element &, int);
     void AddElement(const Element &, double);

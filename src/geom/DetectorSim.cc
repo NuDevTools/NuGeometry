@@ -24,7 +24,10 @@
 #pragma GCC diagnostic pop
 
 #include "geom/Logging.hh"
+#include <cmath>
 #include <numeric>
+#include <stdexcept>
+#include <string>
 
 using NuGeom::DetectorSim;
 
@@ -76,16 +79,37 @@ void DetectorSim::Init(size_t nrays) {
             NuGeom::Log().info("Shot {} / {} rays. Max prob = {}", i, nrays, max_prob);
         FluxSample fs = flux_callback();
         auto [probs, segments] = HandleRay(fs);
-        double prob_tot = std::accumulate(probs.begin(), probs.end(), 0.0) * fs.flux_weight;
-        if(prob_tot > max_prob) {
-            NuGeom::Log().debug("Updating max prob: {} -> {}", max_prob, prob_tot);
-            max_prob = prob_tot;
+        // Layer-1 acceptance weight = flux importance weight * flux-window area *
+        // interaction probability.  The flux weight and window area MUST ride in
+        // the envelope (and the acceptance below), exactly like GENIE's
+        // fMaxWeight over nimpwt*wgt; see ProduceEvent for the correspondence and
+        // why window_area is needed.
+        double accept_w =
+            fs.flux_weight * fs.window_area * std::accumulate(probs.begin(), probs.end(), 0.0);
+        if(accept_w > max_prob) {
+            NuGeom::Log().debug("Updating max prob: {} -> {}", max_prob, accept_w);
+            max_prob = accept_w;
             last_update = i;
         }
         if(i - last_update > 10000) break;
     }
 
     max_prob *= m_safety_factor;
+
+    // A zero or non-finite max_prob means every sampled ray had a zero
+    // acceptance weight (flux_weight * interaction probability): either the
+    // generator's cross section vanished over the whole flux, or every ray
+    // carried a zero flux weight. ProduceEvent would then divide by it (0/0 ->
+    // NaN) and spin forever, so fail loudly with the likely causes instead.
+    if(!std::isfinite(max_prob) || max_prob <= 0.0)
+        throw std::runtime_error(
+            "DetectorSim::Init: max_prob = " + std::to_string(max_prob) + " after sampling " +
+            std::to_string(nrays) +
+            " rays — every ray had zero acceptance weight (flux_weight * interaction prob). "
+            "Check that the flux weights are non-zero, that the generator's cross section is "
+            "non-zero over the flux energies (e.g. matching energy units, GeV vs MeV), and that "
+            "the geometry materials map onto the generator's targets.");
+
     NuGeom::Log().info("Maximum probability found with safety factor ({}): {}", m_safety_factor,
                        max_prob);
 }
@@ -93,26 +117,47 @@ void DetectorSim::Init(size_t nrays) {
 bool DetectorSim::ProduceEvent() {
     FluxSample fs = flux_callback();
 
-    // Charge POT per thrown ray, independent of accept/reject outcome.
-    const double pot_contribution = fs.flux_weight * fs.ray.POT() / max_prob;
-    m_pot += pot_contribution;
-
     auto [probs, segments] = HandleRay(fs);
-    double tot_probs = std::accumulate(probs.begin(), probs.end(), 0.0) * fs.flux_weight;
-
-    NuGeom::Log().trace("ProduceEvent: E = {} GeV, pdg = {}, {} segments, P = {} / max_prob = {} "
-                        "(accept prob {})",
-                        fs.energy, fs.pdg, segments.size(), tot_probs, max_prob,
-                        tot_probs / max_prob);
-    if(tot_probs > max_prob)
-        NuGeom::Log().warn(
-            "ProduceEvent: ray probability {} exceeds max_prob {}; increase the safety "
-            "factor or Init() sample size",
-            tot_probs, max_prob);
-
-    if(tot_probs / max_prob < NuGeom::Random::Instance().Uniform(0.0, 1.0)) return false;
-
     double total_prob = std::accumulate(probs.begin(), probs.end(), 0.0);
+
+    // Layer-1 acceptance weight = flux importance weight * flux-window area *
+    // interaction probability.  This mirrors GENIE GNuMIFlux's unweighted/retry
+    // path:
+    //   * the flux weight (dk2nu nimpwt*wgt) rides in the acceptance, accepting
+    //     a ray with probability accept_w / max_prob — GENIE's w_i / fMaxWeight;
+    //   * window_area [cm^2] turns the per-cm^2 flux weight into a rate over the
+    //     detector face.  The converter spreads the ray origins uniformly across
+    //     a transverse flux window of this area (GENIE samples positions over its
+    //     flux window for the same reason), so summing flux_weight*window_area*
+    //     tot_probs Monte-Carlo integrates the rate over the face.  Omitting it
+    //     (all rays converging to one point) leaves the rate low by ~window_area
+    //     (~2.4e5 cm^2 for ND-LAr);
+    //   * max_prob is the envelope max_i(flux_weight_i * window_area * tot_probs_i),
+    //     GENIE's fMaxWeight (here it also folds the interaction prob, since
+    //     DetectorSim couples flux and interaction in one rejection step).
+    const double accept_w = fs.flux_weight * fs.window_area * total_prob;
+
+    // POT charged per thrown ray, flat and independent of accept/reject — the
+    // analogue of GENIE's "fAccumPOTs += fEffPOTsPerNu / fMaxWeight".  ray.POT()
+    // is filePOT/Nrays (fEffPOTsPerNu); dividing by the envelope max_prob makes
+    // m_pot the *effective/used* POT (GENIE UsedPOTs), so that the unweighted
+    // events satisfy events/POT == Σ w_i*tot_probs_i / POT_total (the true
+    // rate).  The flux weight must NOT divide POT per ray (that gives a spurious
+    // Σ 1/w_i) — it belongs in accept_w above.
+    if(std::isfinite(max_prob) && max_prob > 0.0) m_pot += fs.ray.POT() / max_prob;
+
+    NuGeom::Log().trace("ProduceEvent: E = {} GeV, pdg = {}, {} segments, P = {} w = {} "
+                        "/ max_prob = {} (accept prob {})",
+                        fs.energy, fs.pdg, segments.size(), total_prob, fs.flux_weight, max_prob,
+                        accept_w / max_prob);
+    if(accept_w > max_prob)
+        NuGeom::Log().warn(
+            "ProduceEvent: ray acceptance weight {} exceeds max_prob {}; increase the safety "
+            "factor or Init() sample size",
+            accept_w, max_prob);
+
+    if(accept_w / max_prob < NuGeom::Random::Instance().Uniform(0.0, 1.0)) return false;
+
     double r = NuGeom::Random::Instance().Uniform(0.0, total_prob);
     VertexPick vp = PickVertex(segments, probs, r);
 
@@ -149,6 +194,8 @@ bool DetectorSim::ProduceEvent() {
                        std::make_shared<HepMC3::StringAttribute>(vp.material.Name()));
     evt.add_attribute("NuGeom.Flux.Weight",
                       std::make_shared<HepMC3::DoubleAttribute>(fs.flux_weight));
+    evt.add_attribute("NuGeom.Flux.WindowArea_cm2",
+                      std::make_shared<HepMC3::DoubleAttribute>(fs.window_area));
     evt.add_attribute("NuGeom.Flux.POT", std::make_shared<HepMC3::DoubleAttribute>(fs.ray.POT()));
     evt.add_attribute("NuGeom.MaxProbNorm",
                       std::make_shared<HepMC3::DoubleAttribute>(1.0 / max_prob));
@@ -189,9 +236,9 @@ std::vector<double> DetectorSim::EvaluateProbs(const LineSegments &segments,
     std::vector<double> probs;
     probs.reserve(segments.size());
     for(const auto &segment : segments) {
-        auto material = segment.GetMaterial();
+        const auto &material = segment.GetMaterial();
         double inv_mfp = 0;
-        for(auto elm : material.Elements()) {
+        for(const auto &elm : material.Elements()) {
             auto cross_section = xsecsmaps.at(elm);
             inv_mfp += cross_section * material.NumberDensity(elm);
         }
@@ -225,7 +272,7 @@ void DetectorSim::GenerateEvents(double pot) {
         if(ProduceEvent()) {
             ++nhits;
             if(nhits % 100 == 0)
-                NuGeom::Log().info("Generated {} events; POT = {} / {}", nhits, m_pot, pot);
+                NuGeom::Log().info("Generated {} events; POT = {:.3e} / {:.3e}", nhits, m_pot, pot);
         }
     }
     NuGeom::Log().info("Accumulated {} events with {} POT", nhits, m_pot);
@@ -296,11 +343,11 @@ NuGeom::HandledRay DetectorSim::HandleRay(double energy, int nu_pdg, const NuGeo
     std::vector<double> probs;
     probs.reserve(segments.size());
     for(const auto &segment : segments) {
-        auto material = segment.GetMaterial();
+        const auto &material = segment.GetMaterial();
         auto meanfreepath = CalculateMeanFreePath(energy, nu_pdg, material);
         probs.push_back(segment.Length() / meanfreepath);
     }
-    return {probs, segments};
+    return {std::move(probs), std::move(segments)};
 }
 
 double DetectorSim::ElementXSec(double energy, int nu_pdg, const NuGeom::Element &elm) const {
@@ -314,9 +361,14 @@ double DetectorSim::ElementXSec(double energy, int nu_pdg, const NuGeom::Element
 
 double DetectorSim::CalculateMeanFreePath(double energy, int nu_pdg,
                                           const NuGeom::Material &mat) const {
+    // This loop runs per element, per segment, per ray. Hoist the logger out
+    // and gate the trace on the level so disabled traces cost nothing (no
+    // per-element format-argument capture). See profile-2026-06 notes.
+    auto &log = NuGeom::Log();
+    const bool trace_on = log.should_log(spdlog::level::trace);
     double inv_mfp = 0;
     for(const auto &elm : mat.Elements()) {
-        NuGeom::Log().trace("Element: {}", elm.PDG());
+        if(trace_on) log.trace("Element: {}", elm.PDG());
         inv_mfp += mat.NumberDensity(elm) * ElementXSec(energy, nu_pdg, elm);
     }
     return 1.0 / inv_mfp;

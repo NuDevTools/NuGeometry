@@ -8,9 +8,20 @@ FluxSource/GeneratorInterface already speak NuHepMC.
 Each dk2nu entry stores a vector<NuRay> with three precomputed rays:
     [0] random decay direction   [1] near detector   [2] far detector
 We emit one HepMC3 event per entry for a chosen ray location (default ND = 1).
-The ray already carries the neutrino energy, direction and per-cm^2 importance
-weight from g4lbne, so calcEnuWgt / decay_through_point (the pydk2nu/ROOT path)
-is not needed.
+The ray already carries the neutrino energy, direction and importance weight
+from g4lbne, so calcEnuWgt / decay_through_point (the pydk2nu/ROOT path) is not
+needed.
+
+Weight units (IMPORTANT)
+------------------------
+dk2nu's nuray.wgt is calcEnuWgt's sangdet*emrat^2: the number of neutrinos
+through a sphere of radius kRDET = 100 cm, i.e. through a 1 m-radius disk of
+area pi*(100 cm)^2 = pi m^2. The main NuGeometry code (and dk2nu_to_csv.py via
+pydk2nu) work in per-cm^2 flux, so we convert:
+    w_cm2 = nimpwt * nuray.wgt * 1e-4 / pi
+where 1e-4 is m^2 -> cm^2 and 1/pi turns "per pi-m^2 disk" into "per m^2".
+Skipping this scaling (writing nimpwt*nuray.wgt) overstates the flux by
+pi*1e4 ~= 31416; see compare_flux.py for the end-to-end cross-check.
 
 Coordinate convention (IMPORTANT)
 ---------------------------------
@@ -21,13 +32,30 @@ record the frame + (optional) beam->detector translation as run-level metadata,
 so NuGeometry can apply the transform once at load time rather than having a
 hidden offset baked into the file. See the NuGeom.* run attributes below.
 
-Per-event central weight is the dk2nu flux weight
-    w = decay.nimpwt * nuray.wgt[location]
-(the 1/pi factor in DUNE's plottingExamples.py is a per-degree plotting
-normalization, not part of the ray weight, so it is not applied here).
+Per-event central weight is the dk2nu flux weight, converted to per-cm^2
+    w = decay.nimpwt * nuray.wgt[location] * 1e-4 / pi
+(the same 1/pi that DUNE's plottingExamples.py applies; it is the disk-area
+normalization of calcEnuWgt, not merely a per-degree plotting factor).
+
+Flux window (IMPORTANT)
+-----------------------
+nuray[location] is precomputed for a single point (ND = on-axis (0,0,57400) cm),
+so emitting it verbatim makes every ray converge to that point. The detector
+sim would then trace one chord and recover only the per-cm^2 flux rate -- low by
+~the detector face area (~2.4e5 cm^2 for ND-LAr). To fix the normalization we
+spread each ray's origin by a uniform random (dx,dy) over a transverse flux
+window (--window-width/--window-height, beam frame; default = the ND-LAr face)
+and record NuGeom.FluxWindow.Area_cm2. NuGeometry multiplies the per-cm^2 weight
+by that area, so summing flux_weight * area * P_interaction over the spread rays
+Monte-Carlo integrates the rate over the face -- mirroring how GENIE's GNuMIFlux
+throws neutrinos at random positions across its flux window. The nuray weight is
+reused at the shifted point (a uniform-flux-over-window approximation, excellent
+at the ~574 m ND baseline); the exact per-position weight would need pydk2nu's
+calcEnuWgt (see compare_flux.py) and is left as a future refinement.
 """
 
 import argparse
+import math
 import sys
 
 import numpy as np
@@ -38,6 +66,11 @@ from pyhepmc import GenEvent, GenParticle, GenVertex, GenRunInfo, FourVector, Un
 # nuray vector index -> human label, used for the default output naming and the
 # NuGeom.FluxLocation run attribute.
 LOCATIONS = {0: "random", 1: "ND", 2: "FD"}
+
+# nuray.wgt is calcEnuWgt's flux through a 1 m-radius disk (area pi*(100 cm)^2 =
+# pi m^2). Multiply by this to get the per-cm^2 weight the main code expects:
+# 1e-4 (m^2 -> cm^2) and 1/pi (per pi-m^2 disk -> per m^2).
+WGT_TO_PER_CM2 = 1e-4 / math.pi
 
 # Default beam->detector translation (cm) recorded for NuGeometry to apply AT
 # LOAD. dk2nu rays are in the BEAM frame; the GDML
@@ -51,6 +84,20 @@ LOCATIONS = {0: "random", 1: "ND", 2: "FD"}
 # are the GDML LAr-center offsets. Override with --det-offset if the geometry or
 # the beam-axis<->hall-origin mapping is refined.
 DEFAULT_DET_OFFSET = (-50.0, -58.25, -56733.0)
+
+# Transverse flux window (cm), in the BEAM frame, over which ray origins are
+# spread (see the "Flux window" note below). The dk2nu ND ray (location 1) is
+# precomputed for the single on-axis point (0,0,57400) cm; emitting it verbatim
+# makes EVERY ray converge to that one point, so the downstream detector
+# simulation samples a single chord and recovers only the per-cm^2 flux rate --
+# low by ~the detector face area (~2.4e5 cm^2 for ND-LAr). We instead shift each
+# ray transversely by a uniform random (dx,dy) within this window, so the rays
+# Monte-Carlo sample the detector face; the recorded area lets NuGeometry turn
+# the per-cm^2 weight back into a total rate. Default = the ND-LAr active argon
+# (ArgonCubeDetector75) transverse face, 700 cm (x) by 342.424 cm (y), centered
+# on the beam axis (the LAr center maps from beam (0,0,57400)).
+DEFAULT_WINDOW_WIDTH = 700.0
+DEFAULT_WINDOW_HEIGHT = 342.424
 
 # Rest masses (GeV) of the decay parents that appear in DUNE beam files, keyed
 # by |PDG|. Used to give the incoming parent particle a valid on-shell energy.
@@ -110,6 +157,17 @@ def parse_args():
                         "left in the beam frame. Default %(default)s maps the "
                         "beam-frame on-axis ND (0,0,57400) onto the LAr center "
                         "of nd_hall_with_lar_tms_nosand.gdml.")
+    p.add_argument("--window-width", type=float, default=DEFAULT_WINDOW_WIDTH,
+                   metavar="W",
+                   help="Transverse flux-window width in x (cm, beam frame) over "
+                        "which ray origins are spread. Default %(default)s (ND-LAr "
+                        "face). Set to 0 to disable spreading (rays converge to a "
+                        "point and the recorded area is 1 cm^2 -- the per-cm^2 flux "
+                        "rate, NOT integrated over the detector face).")
+    p.add_argument("--window-height", type=float, default=DEFAULT_WINDOW_HEIGHT,
+                   metavar="H",
+                   help="Transverse flux-window height in y (cm, beam frame). "
+                        "Default %(default)s (ND-LAr face).")
     p.add_argument("--step", type=int, default=50000,
                    help="uproot iteration chunk size (default: 50000)")
     return p.parse_args()
@@ -123,10 +181,12 @@ def total_pot(files):
     return pot
 
 
-def make_run_info(files, pot, location, offset):
+def make_run_info(files, pot, location, offset, window):
+    width, height = window
+    area = width * height if (width > 0.0 and height > 0.0) else 1.0
     ri = GenRunInfo()
     ri.tools = [GenRunInfo.ToolInfo(
-        name="dk2nu_to_nuhepmc.py", version="1.0",
+        name="dk2nu_to_nuhepmc.py", version="1.1",
         description="dk2nu->NuHepMC flux converter (uproot+pyhepmc, no ROOT)")]
     ri.weight_names = ["flux"]
     # String-valued attributes (HepMC3 ASCII stores attributes as strings).
@@ -141,6 +201,11 @@ def make_run_info(files, pot, location, offset):
         # unless --det-offset was given; NuGeometry may also override it.
         "NuGeom.BeamToDetector.Translation_cm":
             ",".join(repr(float(o)) for o in offset),
+        # Transverse flux-window area (cm^2) the ray origins were spread over.
+        # NuGeometry folds this into the per-cm^2 flux weight so the event rate
+        # is integrated over the detector face (see the converter docstring).
+        "NuGeom.FluxWindow.Area_cm2": repr(float(area)),
+        "NuGeom.FluxWindow.Size_cm": f"{float(width)!r},{float(height)!r}",
         "NuGeom.SourceFiles": ";".join(files),
     }
     return ri
@@ -151,9 +216,23 @@ def main():
     out = args.output or f"flux_{LOCATIONS[args.location]}.hepmc3"
     loc = args.location
 
+    window = (args.window_width, args.window_height)
+    spread = args.window_width > 0.0 and args.window_height > 0.0
+    half_w = 0.5 * args.window_width
+    half_h = 0.5 * args.window_height
+    rng = np.random.default_rng()
+
     pot = total_pot(args.files)
     print(f"Total POT: {pot:.6e}")
     print(f"Emitting nuray[{loc}] ({LOCATIONS[loc]}) -> {out}")
+    if spread:
+        print(f"Spreading ray origins over a {args.window_width} x "
+              f"{args.window_height} cm flux window "
+              f"(area {args.window_width * args.window_height:.6e} cm^2)")
+    else:
+        print("Flux window disabled (--window-width/height <= 0): rays converge "
+              "to a point and the recorded area is 1 cm^2. The event rate will be "
+              "the per-cm^2 flux rate, NOT integrated over the detector face.")
     if any(args.det_offset):
         print(f"Recording beam->detector translation (cm, applied at load): "
               f"{tuple(args.det_offset)}")
@@ -161,7 +240,7 @@ def main():
         print("No beam->detector offset given; recording identity. NuGeometry "
               "applies the transform at load.")
 
-    run_info = make_run_info(args.files, pot, loc, args.det_offset)
+    run_info = make_run_info(args.files, pot, loc, args.det_offset, window)
     sources = [f"{f}:dk2nuTree" for f in args.files]
 
     n_written = 0
@@ -192,7 +271,7 @@ def main():
             for i in range(len(ntype)):
                 if args.flavor is not None and int(ntype[i]) != args.flavor:
                     continue
-                w = float(nimpwt[i] * wgt[i])
+                w = float(nimpwt[i] * wgt[i] * WGT_TO_PER_CM2)
                 if not np.isfinite(w) or w <= 0.0:
                     n_skipped += 1
                     continue
@@ -221,7 +300,16 @@ def main():
                                float(E[i])),
                     int(ntype[i]), 1)
 
-                vtx = GenVertex(FourVector(float(vx[i]), float(vy[i]),
+                # Spread the ray transversely across the flux window: shifting
+                # the decay vertex by (dx,dy,0) rigidly translates the whole ray
+                # (direction unchanged), so its crossing point at the detector
+                # plane moves by exactly (dx,dy). The precomputed nuray weight is
+                # kept as-is -- a uniform-flux-over-window approximation that is
+                # excellent at the ND (the window is ~m-scale, the baseline
+                # ~574 m), and exactly recovers the missing face-area factor.
+                dx = rng.uniform(-half_w, half_w) if spread else 0.0
+                dy = rng.uniform(-half_h, half_h) if spread else 0.0
+                vtx = GenVertex(FourVector(float(vx[i]) + dx, float(vy[i]) + dy,
                                            float(vz[i]), 0.0))
                 vtx.add_particle_in(parent)
                 vtx.add_particle_out(nu)

@@ -109,7 +109,7 @@ NuGeom::Ray Transform3D::ApplyRay(const Ray &ray, const Transform3D &transform) 
 
 NuGeom::Ray Transform3D::TranslateRay(const Ray &ray, const Translation3D &trans) {
     auto origin = trans.Apply(ray.Origin());
-    return {origin, ray.Direction(), false};
+    return {origin, ray.Direction(), ray.POT(), false};
 }
 
 NuGeom::Ray Transform3D::ApplyRay(const Ray &ray, const Translation3D &trans,
@@ -117,7 +117,8 @@ NuGeom::Ray Transform3D::ApplyRay(const Ray &ray, const Translation3D &trans,
     auto origin = rot.Apply(trans.Apply(ray.Origin()));
     auto direction = rot.Apply(ray.Direction());
 
-    return {origin, direction, ray.POT()};
+    // Rotation preserves the unit norm; skip re-normalization.
+    return {origin, direction, ray.POT(), false};
 }
 
 NuGeom::Ray Transform3D::ApplyRayDirect(const Ray &ray, const Transform3D &t) {

@@ -226,11 +226,12 @@ void VolumeModule(py::module &m) {
 }
 
 void WorldModule(py::module &m) {
+    // No constructors exposed: segments reference materials owned by the
+    // World's volume tree and are only produced by World.line_segments().
     py::class_<NuGeom::LineSegment>(m, "LineSegment")
-        .def(py::init<>())
-        .def(py::init<double, size_t>())
+        .def("start", &NuGeom::LineSegment::Start)
+        .def("end", &NuGeom::LineSegment::End)
         .def("length", &NuGeom::LineSegment::Length)
-        .def("shape_id", &NuGeom::LineSegment::ShapeID)
         .def("get_material", &NuGeom::LineSegment::GetMaterial);
 
     py::class_<NuGeom::Ray>(m, "Ray")

@@ -90,7 +90,7 @@ bool ParseCSVRow(const std::string &line, NuGeom::FluxSample &fs) {
 // direction.  Returns false for events without a usable neutrino.
 // Mirrors the extraction in HepMCFluxReader.cc (LoadHepMCFlux).
 bool ExtractHepMCRay(const HepMC3::GenEvent &evt, const NuGeom::Vector3D &offset,
-                     double pot_per_ray, NuGeom::FluxSample &fs) {
+                     double pot_per_ray, double window_area, NuGeom::FluxSample &fs) {
     constexpr int kStatusFinal = NuHepMC::ParticleStatus::UndecayedPhysical; // 1
 
     HepMC3::ConstGenParticlePtr nu;
@@ -120,6 +120,7 @@ bool ExtractHepMCRay(const HepMC3::GenEvent &evt, const NuGeom::Vector3D &offset
     fs.ray = NuGeom::Ray(NuGeom::Vector3D{pos.x(), pos.y(), pos.z()} + offset,
                          NuGeom::Vector3D{mom.px(), mom.py(), mom.pz()}, pot_per_ray);
     fs.flux_weight = weight;
+    fs.window_area = window_area;
     fs.decorate = nullptr;
     return true;
 }
@@ -242,6 +243,23 @@ void HepMCFluxStreamer::Summarize(const Vector3D *offset_override) {
                     m_offset = ParseTriplet(t_s, "NuGeom.BeamToDetector.Translation_cm");
             }
 
+            const std::string area_s = RunAttr(ri, "NuGeom.FluxWindow.Area_cm2");
+            if(!area_s.empty()) {
+                try {
+                    m_window_area = std::stod(area_s);
+                } catch(const std::exception &) {
+                    NuGeom::Log().warn(
+                        "FluxStreamer: could not parse NuGeom.FluxWindow.Area_cm2='{}'", area_s);
+                }
+            } else {
+                NuGeom::Log().warn(
+                    "FluxStreamer: no NuGeom.FluxWindow.Area_cm2 in '{}'; using 1.0 cm^2 "
+                    "(event rate will be the per-cm^2 flux rate, NOT integrated over the "
+                    "detector face -- regenerate the flux with a flux window to fix the "
+                    "normalization)",
+                    m_path);
+            }
+
             const std::string unit = RunAttr(ri, "NuGeom.LengthUnit");
             if(!unit.empty() && unit != "cm")
                 NuGeom::Log().warn("FluxStreamer: file length unit is '{}', not 'cm'; the "
@@ -251,7 +269,7 @@ void HepMCFluxStreamer::Summarize(const Vector3D *offset_override) {
             metadata_read = true;
         }
 
-        if(!ExtractHepMCRay(evt, m_offset, 1.0, fs)) {
+        if(!ExtractHepMCRay(evt, m_offset, 1.0, m_window_area, fs)) {
             ++n_skipped;
             continue;
         }
@@ -268,9 +286,9 @@ void HepMCFluxStreamer::Summarize(const Vector3D *offset_override) {
     m_pot_per_ray = m_pot > 0.0 ? m_pot / static_cast<double>(m_count) : 1.0;
 
     NuGeom::Log().info("FluxStreamer: '{}' has {} rays (E in [{}, {}] GeV, POT={:.6e}, "
-                       "offset=({}, {}, {}) cm)",
-                       m_path, m_count, m_emin, m_emax, m_pot, m_offset.X(), m_offset.Y(),
-                       m_offset.Z());
+                       "window_area={:.6e} cm^2, offset=({}, {}, {}) cm)",
+                       m_path, m_count, m_emin, m_emax, m_pot, m_window_area, m_offset.X(),
+                       m_offset.Y(), m_offset.Z());
     if(n_skipped)
         NuGeom::Log().warn("FluxStreamer: skipped {} events without a usable neutrino ray",
                            n_skipped);
@@ -288,7 +306,7 @@ bool HepMCFluxStreamer::TryNext(FluxSample &fs) {
     while(true) {
         m_reader->read_event(evt);
         if(m_reader->failed()) return false;
-        if(ExtractHepMCRay(evt, m_offset, m_pot_per_ray, fs)) return true;
+        if(ExtractHepMCRay(evt, m_offset, m_pot_per_ray, m_window_area, fs)) return true;
     }
 }
 

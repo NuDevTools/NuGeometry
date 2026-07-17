@@ -13,6 +13,7 @@ namespace NuGeom {
 struct HepMCFlux {
     std::vector<FluxSample> samples; // rays, beam->detector transform applied
     double pot = 0.0;                // NuHepMC.Exposure.POT from the file
+    double window_area = 1.0;        // NuGeom.FluxWindow.Area_cm2 (1.0 if absent)
     Vector3D offset;                 // translation (cm) actually applied
     std::string frame;               // NuGeom.CoordinateFrame ("beam")
     std::string length_unit;         // NuGeom.LengthUnit ("cm")

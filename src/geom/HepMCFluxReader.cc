@@ -110,6 +110,16 @@ HepMCFlux LoadHepMCFlux(const std::string &path, const Vector3D *offset_override
                 }
             }
 
+            const std::string area_s = RunAttr(ri, "NuGeom.FluxWindow.Area_cm2");
+            if(!area_s.empty()) {
+                try {
+                    out.window_area = std::stod(area_s);
+                } catch(const std::exception &) {
+                    NuGeom::Log().warn(
+                        "HepMCFluxReader: could not parse NuGeom.FluxWindow.Area_cm2='{}'", area_s);
+                }
+            }
+
             if(offset_override) {
                 out.offset = *offset_override;
                 NuGeom::Log().info("HepMCFluxReader: overriding recorded transform with "
@@ -188,6 +198,7 @@ HepMCFlux LoadHepMCFlux(const std::string &path, const Vector3D *offset_override
         fs.pdg = r.pdg;
         fs.ray = Ray(r.origin, r.direction, pot_per_ray);
         fs.flux_weight = r.weight;
+        fs.window_area = out.window_area;
         out.samples.push_back(std::move(fs));
     }
 

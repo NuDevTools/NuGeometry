@@ -97,6 +97,10 @@ class HepMCFluxStreamer : public FluxStreamer {
 
     double m_pot = 0.0;
     double m_pot_per_ray = 1.0;
+    // Transverse flux-window area (cm^2) recorded by the converter; folded into
+    // each sample's window_area so the per-cm^2 weight integrates over the
+    // detector face.  1.0 (no-op) when the file predates the attribute.
+    double m_window_area = 1.0;
     Vector3D m_offset;
     std::unique_ptr<HepMC3::ReaderAscii> m_reader;
 };

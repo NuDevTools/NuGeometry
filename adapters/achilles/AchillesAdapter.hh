@@ -9,9 +9,11 @@
 #include "yaml-cpp/yaml.h"
 #pragma GCC diagnostic pop
 
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <utility>
 
 namespace achilles {
@@ -88,6 +90,18 @@ class AchillesAdapter : public GeneratorInterface {
     bool EnsureBeamEnergyCoverage(double emin, double emax);
 
   private:
+    // VertexEnvelope is a post-warmup scalar per (nu, target) process group —
+    // independent of energy — but EnvelopeXSec is queried per element, per
+    // segment, per ray. Memoize it (keyed on packed nu/target PDGs) so the
+    // repeated calls collapse to a hash lookup. The cache is cleared in
+    // InitRun(), since re-warming up rebuilds the unweighter envelopes.
+    double CachedVertexEnvelope(int nu_pdg, int target_pdg);
+    static std::uint64_t EnvelopeKey(int nu_pdg, int target_pdg) {
+        return (static_cast<std::uint64_t>(static_cast<std::uint32_t>(nu_pdg)) << 32) |
+               static_cast<std::uint32_t>(target_pdg);
+    }
+    std::unordered_map<std::uint64_t, double> m_envelope_cache;
+
     // The Achilles config as a mutable YAML node; loads m_config_path on
     // first use when constructed from a file path.
     YAML::Node &Config();

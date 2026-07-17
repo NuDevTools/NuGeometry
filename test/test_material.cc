@@ -1,5 +1,6 @@
 #include "catch2/catch.hpp"
 
+#include "geom/Logging.hh"
 #include "geom/Material.hh"
 #include "spdlog/sinks/ostream_sink.h"
 #include "spdlog/spdlog.h"
@@ -18,6 +19,7 @@ static std::ostringstream test_logger() {
     spdlog::drop("nugeom"); // replace any previously registered instance
     spdlog::register_logger(oss_logger);
     spdlog::set_default_logger(oss_logger);
+    NuGeom::RefreshLogger(); // Log() caches its handle; repoint it at oss_logger
     return oss;
 }
 

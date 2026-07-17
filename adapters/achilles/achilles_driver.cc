@@ -56,6 +56,7 @@
 #include "geom/DetectorSim.hh"
 #include "geom/FluxSource.hh"
 #include "geom/FluxStreamer.hh"
+#include "geom/Logging.hh"
 #include "geom/Ray.hh"
 #include "geom/Vector3D.hh"
 
@@ -261,6 +262,7 @@ int main(int argc, char **argv) {
         }
         spdlog::register_logger(nugeom_logger);
         spdlog::set_default_logger(achilles_logger);
+        NuGeom::RefreshLogger(); // point NuGeom::Log()'s cached handle here
 
         const bool total = (cfg.mode == "total");
         if(!total && cfg.mode != "envelope")

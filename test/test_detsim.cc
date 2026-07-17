@@ -4,6 +4,7 @@
 #include "geom/FluxSource.hh"
 #include "geom/Material.hh"
 #include "geom/MockGenerator.hh"
+#include "geom/Random.hh"
 #include "geom/Shape.hh"
 #include "geom/Volume.hh"
 #include "geom/World.hh"
@@ -70,9 +71,24 @@ struct DetSimFixture {
 
 } // namespace
 
-// POT accounting: for a constant flux weight w, constant Ray::POT() = p, and
-// a given max_prob M, each thrown ray contributes w*p/M to m_pot regardless
-// of accept/reject outcome.  After N throws we expect m_pot == N*w*p/M.
+// Init must reject a configuration where the cross section vanishes over the
+// whole flux: max_prob would be exactly zero, and ProduceEvent would then
+// divide by it (0/0 -> NaN) and spin forever.  This is the failure mode that a
+// GeV/MeV energy-unit mismatch produced in TotalXSecRetry mode.
+TEST_CASE("DetectorSim::Init throws when every ray has zero interaction probability",
+          "[DetectorSim][Init]") {
+    NuGeom::DetectorSim sim(1.0);
+    DetSimFixture::SetupSim(sim);
+    sim.SetMaxProb(0.0); // clear the fixture's seed so Init must find max_prob itself
+    auto gen = std::make_shared<NuGeom::MockGenerator>([](double, int, int) { return 0.0; });
+    sim.SetGenerator(gen);
+    CHECK_THROWS_WITH(sim.Init(10), Catch::Contains("max_prob"));
+}
+
+// POT accounting: POT is the beam exposure the ray represents, so each thrown
+// ray contributes p/M to m_pot regardless of its flux weight or accept/reject
+// outcome (the flux weight belongs in the flux/acceptance, not in POT).  After
+// N throws we expect m_pot == N*p/M.
 TEST_CASE("DetectorSim POT accounting is deterministic per thrown ray", "[DetectorSim][POT]") {
     NuGeom::Material water("Water", 1.0, 2);
     water.AddElement(NuGeom::Element("Hydrogen", 1, 1), 2);
@@ -102,7 +118,7 @@ TEST_CASE("DetectorSim POT accounting is deterministic per thrown ray", "[Detect
     const double M = sim.GetMaxProb();
     REQUIRE(M == Approx(1.0));
 
-    const double increment = flux_weight * ray_pot / M;
+    const double increment = ray_pot / M; // POT does not carry the flux weight
     const double target_pot = 100 * increment;
     sim.GenerateEvents(target_pot);
 
@@ -126,7 +142,7 @@ TEST_CASE("DetectorSim EnvelopeNoRetry takes a single trial per vertex",
     auto gen = std::make_shared<AlternatingGenerator>();
     sim.SetGenerator(gen);
 
-    const double increment = DetSimFixture::flux_weight * DetSimFixture::ray_pot / sim.GetMaxProb();
+    const double increment = DetSimFixture::ray_pot / sim.GetMaxProb(); // POT excludes flux weight
     sim.GenerateEvents(std::size_t{4});
 
     // Every other trial is rejected, so emitting 4 events takes 8 trials and
@@ -145,12 +161,142 @@ TEST_CASE("DetectorSim TotalXSecRetry retries the same vertex until emit",
     auto gen = std::make_shared<AlternatingGenerator>();
     sim.SetGenerator(gen);
 
-    const double increment = DetSimFixture::flux_weight * DetSimFixture::ray_pot / sim.GetMaxProb();
+    const double increment = DetSimFixture::ray_pot / sim.GetMaxProb(); // POT excludes flux weight
     sim.GenerateEvents(std::size_t{4});
 
     // Two trials per vertex (reject, emit) but only one thrown ray per event.
     CHECK(gen->Calls() == 8);
     CHECK(sim.GetAccumulatedPOT() == Approx(4 * increment));
+}
+
+// Flux-averaged cross-section consistency: the event rate produced by the
+// full ray machinery must imply the same flux-averaged cross section that the
+// generator reports.  The flux is Σw / POT (w = per-ray flux weight), so each
+// ray's interaction rate is w * N_col * sigma while it represents POT_per_ray
+// of exposure.  Hence
+//   events/POT = <w * N_col * sigma> / POT_per_ray
+//   <sigma>_ray = (events/POT) * POT_per_ray / (N_col * <w>)
+// with N_col computed here analytically (Avogadro, density, chord length) —
+// independent of Material::NumberDensity.  Dividing out <w> here (not folding
+// it into POT) is the correct normalization; a units mismatch anywhere in the
+// chain (cm vs mm, cm^2 vs nb, per-cm^3 densities) shows up as orders of
+// magnitude between <sigma>_ray and <sigma>_gen.
+namespace {
+// Water cube from DetSimFixture: rho = 1 g/cm^3, Box{10,10,10} = 10 cm chord.
+// n_H = (2/18) N_A, n_O = (1/18) N_A  =>  n_total = (3/18) N_A per cm^3.
+constexpr double kAvogadro = 6.02214076e23;
+constexpr double kWaterAtomsPerCm3 = 3.0 / 18.0 * kAvogadro;
+constexpr double kChordCm = 10.0;
+constexpr double kColumnDensity = kWaterAtomsPerCm3 * kChordCm; // atoms / cm^2
+} // namespace
+
+TEST_CASE("Flux-averaged xsec from event rate matches the generator (monoenergetic)",
+          "[DetectorSim][XSec]") {
+    constexpr double sigma = 1e-38; // cm^2, constant
+    NuGeom::DetectorSim sim(1.0);
+    DetSimFixture::SetupSim(sim);
+    auto gen = std::make_shared<NuGeom::MockGenerator>([](double, int, int) { return sigma; });
+    sim.SetGenerator(gen);
+
+    // Constant flux: Init lands max_prob exactly on the per-ray probability,
+    // so every thrown ray is accepted and the rate is deterministic.
+    sim.Init(5);
+
+    constexpr std::size_t nevents = 100;
+    sim.GenerateEvents(nevents);
+
+    const double events_per_pot = static_cast<double>(nevents) / sim.GetAccumulatedPOT();
+    // Constant flux weight, so <w> = flux_weight; divide it out to recover sigma.
+    const double sigma_ray =
+        events_per_pot * DetSimFixture::ray_pot / (kColumnDensity * DetSimFixture::flux_weight);
+
+    CHECK(sigma_ray == Approx(sigma).epsilon(0.02));
+}
+
+TEST_CASE("Flux-averaged xsec from event rate matches the generator (spectrum)",
+          "[DetectorSim][XSec]") {
+    // sigma(E) = sigma0 * E over a three-energy cycling flux: the generator's
+    // flux average is sigma0 * <E>; the ray machinery has to reproduce it
+    // through Init + accept/reject + POT accounting.
+    constexpr double sigma0 = 1e-38; // cm^2 / GeV
+    const std::vector<double> energies = {1.0, 2.0, 3.0};
+
+    NuGeom::DetectorSim sim(1.0);
+    DetSimFixture::SetupSim(sim);
+    auto counter = std::make_shared<std::size_t>(0);
+    sim.SetFluxCallback([counter, energies]() {
+        NuGeom::FluxSample fs;
+        fs.energy = energies[(*counter)++ % energies.size()];
+        fs.pdg = 14;
+        fs.ray = NuGeom::Ray({0, 0, -100}, {0, 0, 1}, DetSimFixture::ray_pot);
+        fs.flux_weight = DetSimFixture::flux_weight;
+        return fs;
+    });
+    auto gen = std::make_shared<NuGeom::MockGenerator>(
+        [](double energy, int, int) { return sigma0 * energy; });
+    sim.SetGenerator(gen);
+
+    NuGeom::Random::Instance().Seed(20260613);
+    sim.Init(30); // covers the full energy cycle; max_prob = P(E_max)
+
+    constexpr std::size_t nevents = 600;
+    sim.GenerateEvents(nevents);
+
+    const double events_per_pot = static_cast<double>(nevents) / sim.GetAccumulatedPOT();
+    // Constant flux weight, so <w> = flux_weight; divide it out to recover sigma.
+    const double sigma_ray =
+        events_per_pot * DetSimFixture::ray_pot / (kColumnDensity * DetSimFixture::flux_weight);
+
+    double sigma_gen = 0; // equal-weight flux average of the generator xsec
+    for(const double e : energies) sigma_gen += gen->TotalXSec(e, 14, 1000080160);
+    sigma_gen /= static_cast<double>(energies.size());
+
+    // The headline check is order-of-magnitude agreement (catches unit bugs);
+    // with this seed the stochastic acceptance keeps it within a few percent.
+    CHECK(sigma_ray / sigma_gen > 0.1);
+    CHECK(sigma_ray / sigma_gen < 10.0);
+    CHECK(sigma_ray == Approx(sigma_gen).epsilon(0.10));
+}
+
+// Varying flux weights: with constant geometry/xsec but per-ray weights drawn
+// from {0.05, 0.15} (mean 0.1), the absolute normalization must satisfy
+//   events/POT = <w> * N_col * sigma / POT_per_ray.
+// This is the case the constant-weight tests above CANNOT catch: if the flux
+// weight is (incorrectly) folded into the POT charge, events/POT comes out a
+// factor 1/<w> = 10x too high here, because the per-ray weights no longer
+// cancel against the single max_prob envelope.
+TEST_CASE("Flux-averaged xsec is correctly normalized for varying flux weights",
+          "[DetectorSim][XSec]") {
+    constexpr double sigma = 1e-38; // cm^2, constant
+    const std::vector<double> weights = {0.05, 0.15};
+    const double mean_w = (weights[0] + weights[1]) / 2.0; // 0.1
+
+    NuGeom::DetectorSim sim(1.0);
+    DetSimFixture::SetupSim(sim);
+    auto counter = std::make_shared<std::size_t>(0);
+    sim.SetFluxCallback([counter, weights]() {
+        NuGeom::FluxSample fs;
+        fs.energy = 1.0;
+        fs.pdg = 14;
+        fs.ray = NuGeom::Ray({0, 0, -100}, {0, 0, 1}, DetSimFixture::ray_pot);
+        fs.flux_weight = weights[(*counter)++ % weights.size()];
+        return fs;
+    });
+    auto gen = std::make_shared<NuGeom::MockGenerator>([](double, int, int) { return sigma; });
+    sim.SetGenerator(gen);
+
+    NuGeom::Random::Instance().Seed(20260613);
+    sim.Init(20); // max_prob = max(w) * N_col * sigma
+
+    constexpr std::size_t nevents = 2000;
+    sim.GenerateEvents(nevents);
+
+    const double events_per_pot = static_cast<double>(nevents) / sim.GetAccumulatedPOT();
+    // Recover sigma using the mean flux weight; the buggy (weight-in-POT)
+    // normalization would land this 1/<w> = 10x high.
+    const double sigma_ray = events_per_pot * DetSimFixture::ray_pot / (kColumnDensity * mean_w);
+
+    CHECK(sigma_ray == Approx(sigma).epsilon(0.08));
 }
 
 // The two sampling modes bookkeep the unweighter inefficiency in different

@@ -15,7 +15,15 @@ namespace NuGeom {
 // If the host application registered a "nugeom" logger (CreateLogger or a
 // driver), that one is used; otherwise the default logger's sinks, level,
 // and pattern are cloned on first use.
+//
+// The resolved logger is cached, since Log() is called on hot paths. Any code
+// that registers or replaces the "nugeom" logger (via spdlog directly) must
+// call RefreshLogger() afterwards so Log() returns the new instance.
 spdlog::logger &Log();
+
+// Re-resolve and cache the "nugeom" logger. Call after registering/replacing
+// it. CreateLogger() calls this for you.
+void RefreshLogger();
 
 } // namespace NuGeom
 

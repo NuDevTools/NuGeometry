@@ -1311,7 +1311,7 @@
     <rotation unit="degree" name="volfullCryoTubeBox_rot" x="0" y="-90" z="0"/>
     <position unit="cm" name="volDetEnclosure_pos" x="289.5" y="-320.0" z="11982.5"/>
     <rotation unit="degree" name="volDetEnclosure_rot" x="0" y="0" z="0"/>
-    <rotation unit="degree" name="identity" x="0" y="0" z="0"/>
+    <rotation unit="degree" name="noRotate" x="0" y="0" z="0"/>
     <rotation unit="degree" name="r90aboutX" x="90" y="0" z="0"/>
     <rotation unit="degree" name="rminus90aboutX" x="-90" y="0" z="0"/>
     <rotation unit="degree" name="r90aboutY" x="0" y="90" z="0"/>
@@ -1327,6 +1327,8 @@
     <rotation unit="degree" name="r90aboutX180aboutY" x="90" y="180" z="0"/>
     <position unit="cm" name="rockBox_lv_pos" x="-2137.9" y="420.52700000000004" z="-11022.5"/>
     <rotation unit="degree" name="rockBox_lv_rot" x="0" y="0" z="0"/>
+    <position name="center"/>
+    <rotation name="identity"/>
   </define>
   <materials>
     <element name="Elem_hydrogen" Z="1" formula="H">

@@ -26,18 +26,40 @@ void CreateLogger(bool to_file, int level, int flush_time) {
     spdlog::register_logger(logger);
     spdlog::set_default_logger(logger);
     spdlog::flush_every(std::chrono::seconds(flush_time));
+    NuGeom::RefreshLogger(); // point the cached handle at the new logger
 }
 
-spdlog::logger &NuGeom::Log() {
-    // Prefer whatever "nugeom" logger the host registered (driver, tests);
-    // looked up per call so re-registration (e.g. between tests) is honored.
-    if(auto registered = spdlog::get("nugeom")) return *registered;
-    // Otherwise clone the default logger's sinks/level/pattern once and keep
-    // that fallback alive even if the registry is later cleared.
+namespace {
+
+// Resolve the "nugeom" logger: prefer whatever the host registered (driver,
+// tests, CreateLogger); otherwise clone the default logger's sinks/level/
+// pattern once and keep that fallback alive even if the registry is cleared.
+std::shared_ptr<spdlog::logger> ResolveLogger() {
+    if(auto registered = spdlog::get("nugeom")) return registered;
     static std::shared_ptr<spdlog::logger> fallback = []() {
         auto created = spdlog::default_logger()->clone("nugeom");
         spdlog::register_logger(created);
         return created;
     }();
-    return *fallback;
+    return fallback;
+}
+
+// Log() runs on hot paths (per element, per segment, per ray), so the
+// resolved logger is cached to avoid the registry lookup (spdlog::get takes a
+// mutex + hashes the name) on every call.  Hosts that (re)register a "nugeom"
+// logger must call NuGeom::RefreshLogger() to update this handle; all in-repo
+// registration sites do.
+std::shared_ptr<spdlog::logger> &CachedLogger() {
+    static std::shared_ptr<spdlog::logger> cached = ResolveLogger();
+    return cached;
+}
+
+} // namespace
+
+void NuGeom::RefreshLogger() {
+    CachedLogger() = ResolveLogger();
+}
+
+spdlog::logger &NuGeom::Log() {
+    return *CachedLogger();
 }
