@@ -9,9 +9,12 @@
 #include "geom/Volume.hh"
 #include "geom/World.hh"
 
+#include <algorithm>
 #include <cstddef>
 #include <map>
 #include <memory>
+#include <numeric>
+#include <vector>
 
 namespace {
 
@@ -82,7 +85,7 @@ TEST_CASE("DetectorSim::Init throws when every ray has zero interaction probabil
     sim.SetMaxProb(0.0); // clear the fixture's seed so Init must find max_prob itself
     auto gen = std::make_shared<NuGeom::MockGenerator>([](double, int, int) { return 0.0; });
     sim.SetGenerator(gen);
-    CHECK_THROWS_WITH(sim.Init(10), Catch::Contains("max_prob"));
+    CHECK_THROWS_WITH(sim.InitFromFlux(10), Catch::Contains("max_prob"));
 }
 
 // POT accounting: POT is the beam exposure the ray represents, so each thrown
@@ -200,7 +203,7 @@ TEST_CASE("Flux-averaged xsec from event rate matches the generator (monoenerget
 
     // Constant flux: Init lands max_prob exactly on the per-ray probability,
     // so every thrown ray is accepted and the rate is deterministic.
-    sim.Init(5);
+    sim.InitFromFlux(5);
 
     constexpr std::size_t nevents = 100;
     sim.GenerateEvents(nevents);
@@ -237,7 +240,7 @@ TEST_CASE("Flux-averaged xsec from event rate matches the generator (spectrum)",
     sim.SetGenerator(gen);
 
     NuGeom::Random::Instance().Seed(20260613);
-    sim.Init(30); // covers the full energy cycle; max_prob = P(E_max)
+    sim.InitFromFlux(30); // covers the full energy cycle; max_prob = P(E_max)
 
     constexpr std::size_t nevents = 600;
     sim.GenerateEvents(nevents);
@@ -286,7 +289,7 @@ TEST_CASE("Flux-averaged xsec is correctly normalized for varying flux weights",
     sim.SetGenerator(gen);
 
     NuGeom::Random::Instance().Seed(20260613);
-    sim.Init(20); // max_prob = max(w) * N_col * sigma
+    sim.InitFromFlux(20); // max_prob = max(w) * N_col * sigma
 
     constexpr std::size_t nevents = 2000;
     sim.GenerateEvents(nevents);
@@ -321,11 +324,158 @@ TEST_CASE("DetectorSim sampling modes produce the same events per POT",
         // Calibrate max_prob from the (constant) flux: with safety factor 1
         // it lands exactly on the per-ray probability for the mode's cross
         // section, so layer-1 accepts every thrown ray.
-        sim.Init(10);
+        sim.InitFromFlux(10);
         sim.GenerateEvents(nevents);
         rate[mode] = static_cast<double>(nevents) / sim.GetAccumulatedPOT();
     }
 
     CHECK(rate[NuGeom::DetectorSim::SamplingMode::EnvelopeNoRetry] ==
           Approx(rate[NuGeom::DetectorSim::SamplingMode::TotalXSecRetry]));
+}
+
+// ...and the case that breaks that agreement in a real run.  AlternatingGenerator
+// above is a *strict* unweighter: every emitted event has weight exactly 1.  Real
+// generators use partial unweighting -- Achilles' default is a Percentile
+// unweighter whose max_w is the 99th percentile of the weight distribution, so
+// ~1% of trials are overweight, accepted with probability 1, and emitted with
+// weight max(1, w/max_w) > 1.
+//
+// The consequence, derived in DetectorSim::ReportRunSummary:
+//   * TotalXSecRetry retries until emit, so it produces exactly one event per
+//     layer-1 accept: events/POT is the physical rate.
+//   * EnvelopeNoRetry takes a single shot that emits with probability
+//     E[min(1, w/max_w)] = sigma/(max_w * <weight>): its event count is LOW by
+//     <weight>, and sum(weights)/POT is the physical rate instead.
+// So the two modes' RAW EVENT COUNTS differ by exactly <weight>, while their
+// weighted rates agree.  This is the mechanism behind the observed
+// mode-to-mode event-count discrepancy.
+namespace {
+
+// Two-valued weight distribution with an explicit overweight tail.  A fraction
+// `tail_frac` of trials draw weight `tail * max_w`, the rest draw `max_w/2`.
+// Both TotalXSec and EnvelopeXSec are exact for this distribution, so any
+// mode-to-mode difference comes purely from the overweight handling.
+class PartialUnweightGenerator : public NuGeom::GeneratorInterface {
+  public:
+    static constexpr double kMaxW = 2e-38; // envelope (the "percentile")
+    static constexpr double kTailFrac = 0.1;
+    static constexpr double kTailRatio = 4.0; // overweight trials sit at 4 * max_w
+
+    // E[w] = 0.9 * (max_w/2) + 0.1 * (4 max_w) = 0.85 * max_w
+    static constexpr double kSigma = (1 - kTailFrac) * 0.5 * kMaxW + kTailFrac * kTailRatio * kMaxW;
+    // E[min(1, w/max_w)] = 0.9 * 0.5 + 0.1 * 1 = 0.55
+    static constexpr double kAcceptProb = (1 - kTailFrac) * 0.5 + kTailFrac * 1.0;
+    // <weight | emitted> = E[w]/max_w / E[min(1, w/max_w)]
+    static constexpr double kMeanWeight = (kSigma / kMaxW) / kAcceptProb;
+
+    void InitRun(std::shared_ptr<HepMC3::GenRunInfo>) override {}
+    double TotalXSec(double, int, int) override { return kSigma; }
+    double EnvelopeXSec(double, int, int) override { return kMaxW; }
+
+    bool GenerateEvent(HepMC3::GenEvent &evt) override {
+        const double ratio = NuGeom::Random::Instance().Uniform(0.0, 1.0) < kTailFrac
+                                 ? kTailRatio // overweight: accepted with probability 1
+                                 : 0.5;
+        if(ratio < NuGeom::Random::Instance().Uniform(0.0, 1.0)) return false;
+        evt.weights() = {std::max(1.0, ratio)}; // the partial-unweight convention
+        return true;
+    }
+};
+
+} // namespace
+
+TEST_CASE("A partial unweighter makes the two modes' raw event counts differ by <weight>",
+          "[DetectorSim][SamplingMode]") {
+    constexpr std::size_t nevents = 20000;
+    std::map<NuGeom::DetectorSim::SamplingMode, NuGeom::DetectorSim::RunStats> stats;
+
+    for(auto mode : {NuGeom::DetectorSim::SamplingMode::EnvelopeNoRetry,
+                     NuGeom::DetectorSim::SamplingMode::TotalXSecRetry}) {
+        NuGeom::Random::Instance().Seed(20260807);
+        NuGeom::DetectorSim sim(1.0);
+        DetSimFixture::SetupSim(sim);
+        sim.SetSamplingMode(mode);
+        sim.SetGenerator(std::make_shared<PartialUnweightGenerator>());
+        sim.InitFromFlux(10);
+        sim.GenerateEvents(nevents);
+        stats[mode] = sim.GetRunStats();
+    }
+
+    const auto &env = stats[NuGeom::DetectorSim::SamplingMode::EnvelopeNoRetry];
+    const auto &tot = stats[NuGeom::DetectorSim::SamplingMode::TotalXSecRetry];
+
+    const double count_rate_env = static_cast<double>(env.emitted) / env.pot;
+    const double count_rate_tot = static_cast<double>(tot.emitted) / tot.pot;
+
+    // The counts disagree, by the mean emitted weight.
+    CHECK(env.sum_weight / static_cast<double>(env.emitted) ==
+          Approx(PartialUnweightGenerator::kMeanWeight).epsilon(0.03));
+    CHECK(count_rate_tot / count_rate_env ==
+          Approx(PartialUnweightGenerator::kMeanWeight).epsilon(0.03));
+
+    // ...while the *right* estimator per mode does agree: sum(weights)/POT in
+    // EnvelopeNoRetry, events/POT in TotalXSecRetry.
+    CHECK(env.sum_weight / env.pot == Approx(count_rate_tot).epsilon(0.03));
+}
+
+// The custom-ray envelope: Init() must bound every flux ray's acceptance weight
+// without ever having seen the flux, and the run must land on the same rate the
+// flux-calibrated envelope gives.  A deliberately hostile flux (weights spanning
+// three decades, presented in increasing order so the early rays badly
+// under-represent the tail) is exactly the case a fixed warm-up envelope clips.
+TEST_CASE("Custom-ray Init gives an unbiased rate on a heavy-tailed flux", "[DetectorSim][Init]") {
+    constexpr double sigma = 1e-38;
+    const std::vector<double> weights = {0.001, 0.01, 0.1, 1.0};
+    const double mean_w =
+        std::accumulate(weights.begin(), weights.end(), 0.0) / static_cast<double>(weights.size());
+
+    NuGeom::Random::Instance().Seed(20260807);
+    NuGeom::DetectorSim sim(1.0);
+    DetSimFixture::SetupSim(sim);
+    auto counter = std::make_shared<std::size_t>(0);
+    sim.SetFluxCallback([counter, weights]() {
+        NuGeom::FluxSample fs;
+        fs.energy = 1.0;
+        fs.pdg = 14;
+        fs.ray = NuGeom::Ray({0, 0, -100}, {0, 0, 1}, DetSimFixture::ray_pot);
+        fs.flux_weight = weights[(*counter)++ % weights.size()];
+        return fs;
+    });
+    sim.SetGenerator(
+        std::make_shared<NuGeom::MockGenerator>([](double, int, int) { return sigma; }));
+
+    // No flux involved: chords through the world box over an energy grid.
+    sim.SetEnergyRange(0.5, 5.0);
+    sim.SetFluxSpecies({14});
+    sim.Init(64);
+
+    constexpr std::size_t nevents = 4000;
+    sim.GenerateEvents(nevents);
+
+    const double events_per_pot = static_cast<double>(nevents) / sim.GetAccumulatedPOT();
+    const double sigma_ray = events_per_pot * DetSimFixture::ray_pot / (kColumnDensity * mean_w);
+    CHECK(sigma_ray == Approx(sigma).epsilon(0.05));
+
+    // The probe rays are chords of the world box, so they bound the flux ray's
+    // column density: the envelope only ever grows to track the flux weight.
+    CHECK(sim.GetRunStats().envelope_growths == weights.size());
+}
+
+// Init() must fail loudly rather than leave a zero envelope for ProduceEvent to
+// divide by (0/0 -> NaN, then an infinite loop).
+TEST_CASE("Custom-ray Init throws when the cross section vanishes", "[DetectorSim][Init]") {
+    NuGeom::DetectorSim sim(1.0);
+    DetSimFixture::SetupSim(sim);
+    sim.SetMaxProb(0.0);
+    sim.SetGenerator(std::make_shared<NuGeom::MockGenerator>([](double, int, int) { return 0.0; }));
+    sim.SetEnergyRange(0.5, 5.0);
+    CHECK_THROWS_WITH(sim.Init(8), Catch::Contains("cross section is zero"));
+}
+
+TEST_CASE("Custom-ray Init requires an energy range", "[DetectorSim][Init]") {
+    NuGeom::DetectorSim sim(1.0);
+    DetSimFixture::SetupSim(sim);
+    sim.SetGenerator(
+        std::make_shared<NuGeom::MockGenerator>([](double, int, int) { return 1e-38; }));
+    CHECK_THROWS_WITH(sim.Init(8), Catch::Contains("energy range"));
 }

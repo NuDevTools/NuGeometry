@@ -22,10 +22,11 @@ namespace NuGeom {
 // either rewinds to the first ray (loop = true) or throws std::runtime_error
 // (loop = false).
 //
-// Construction performs one light pass over the file to gather a summary
-// (ray count, energy range, and for NuHepMC files the POT and beam->detector
-// offset) without retaining the rays; the count keeps the per-ray POT
-// normalization of NuHepMC fluxes identical to a full load.
+// Construction gathers a summary (ray count, energy range, and for NuHepMC
+// files the POT and beam->detector offset) without retaining the rays; the
+// count keeps the per-ray POT normalization of NuHepMC fluxes identical to a
+// full load.  How much of the file that costs is format-specific -- see
+// HepMCFluxStreamer, which never parses the file up front.
 class FluxStreamer {
   public:
     virtual ~FluxStreamer() = default;
@@ -40,6 +41,9 @@ class FluxStreamer {
     std::size_t Count() const { return m_count; }
     double EMin() const { return m_emin; }
     double EMax() const { return m_emax; }
+    // Whether EMin()/EMax() are known.  A streamer that never reads the whole
+    // file up front can only report them if the file records them.
+    bool HasEnergyRange() const { return m_emin <= m_emax; }
     // Completed passes over the file (only grows when looping).
     std::size_t Loops() const { return m_loops; }
 
@@ -78,6 +82,16 @@ class CSVFluxStreamer : public FluxStreamer {
 // stored in the beam frame and the recorded beam->detector translation (or
 // `offset_override`, in cm) is applied to each origin; Ray::POT() =
 // total POT / total ray count so a full pass reproduces the file exposure.
+//
+// Nothing is parsed up front.  Construction reads exactly one event -- enough
+// for the run-level metadata -- and then needs only the ray count, to turn the
+// file's total POT into a per-ray exposure.  That count comes from the
+// NuGeom.Flux.NRays run attribute when the converter recorded it, and
+// otherwise from a raw byte scan for event-record lines, which is ~20x cheaper
+// than building a GenEvent per ray (17 s -> under 1 s on a 585 MB DUNE ND
+// flux).  The energy range is likewise taken from NuGeom.Flux.EnergyRange_GeV
+// if present and reported as unknown if not (HasEnergyRange()); deriving it
+// would require reading every ray, which is exactly what this class avoids.
 class HepMCFluxStreamer : public FluxStreamer {
   public:
     HepMCFluxStreamer(const std::string &path, bool loop,
@@ -92,8 +106,9 @@ class HepMCFluxStreamer : public FluxStreamer {
     void Rewind() override;
 
   private:
-    // First pass: metadata (POT, offset) + ray count + energy range.
-    void Summarize(const Vector3D *offset_override);
+    // Read the run-level metadata (POT, offset, window area, and the optional
+    // ray-count / energy-range hints) from the file's first event.
+    void ReadMetadata(const Vector3D *offset_override);
 
     double m_pot = 0.0;
     double m_pot_per_ray = 1.0;

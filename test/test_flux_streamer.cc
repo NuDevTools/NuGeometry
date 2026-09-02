@@ -36,13 +36,21 @@ const std::string kThreeRays = "14,0.5,1.0,0,0,1,0,0,-100\n"
 // Write a minimal NuHepMC-style flux file with `n` events: parent pion in,
 // neutrino (status 1) out of a decay vertex.  POT and the beam->detector
 // translation are recorded as run-info attributes, as the dk2nu converter does.
-std::string WriteHepMCFlux(const std::string &name, int n) {
+// `survey` adds the NuGeom.Flux.NRays / EnergyRange_GeV attributes the current
+// converter writes, which let the streamer open the file without scanning it.
+std::string WriteHepMCFlux(const std::string &name, int n, bool survey = false) {
     const auto path = (std::filesystem::temp_directory_path() / name).string();
     auto run = std::make_shared<HepMC3::GenRunInfo>();
     run->add_attribute("NuHepMC.Exposure.POT", std::make_shared<HepMC3::StringAttribute>("100.0"));
     run->add_attribute("NuGeom.BeamToDetector.Translation_cm",
                        std::make_shared<HepMC3::StringAttribute>("10,20,30"));
     run->add_attribute("NuGeom.LengthUnit", std::make_shared<HepMC3::StringAttribute>("cm"));
+    if(survey) {
+        run->add_attribute("NuGeom.Flux.NRays",
+                           std::make_shared<HepMC3::StringAttribute>(std::to_string(n)));
+        run->add_attribute("NuGeom.Flux.EnergyRange_GeV",
+                           std::make_shared<HepMC3::StringAttribute>("1.0," + std::to_string(n)));
+    }
 
     HepMC3::WriterAscii writer(path, run);
     for(int i = 0; i < n; ++i) {
@@ -131,9 +139,10 @@ TEST_CASE("HepMCFluxStreamer streams NuHepMC rays with POT split and offset", "[
 
     CHECK(streamer.Count() == 4);
     CHECK(streamer.TotalPOT() == Approx(100.0));
-    CHECK(streamer.EMin() == Approx(1.0));
-    CHECK(streamer.EMax() == Approx(4.0));
     CHECK(streamer.Offset().X() == Approx(10.0));
+    // No recorded energy range and the streamer never reads the rays up front,
+    // so it must report the range as unknown rather than invent one.
+    CHECK_FALSE(streamer.HasEnergyRange());
 
     for(int i = 0; i < 4; ++i) {
         auto fs = streamer.Next();
@@ -169,4 +178,32 @@ TEST_CASE("OpenFluxStreamer dispatches on extension", "[FluxStreamer]") {
     CHECK(dynamic_cast<NuGeom::CSVFluxStreamer *>(s1.get()) != nullptr);
     auto s2 = NuGeom::OpenFluxStreamer(hepmc, false);
     CHECK(dynamic_cast<NuGeom::HepMCFluxStreamer *>(s2.get()) != nullptr);
+}
+
+// The converter records the ray count and energy range so the streamer can open
+// a multi-GB flux file without touching it: the count still has to normalize
+// POT per ray exactly as the byte-scan fallback does.
+TEST_CASE("HepMCFluxStreamer takes the ray count and energy range from the file",
+          "[FluxStreamer]") {
+    const auto path = WriteHepMCFlux("nugeom_streamer_survey.hepmc", 4, /*survey=*/true);
+    NuGeom::HepMCFluxStreamer streamer(path, /*loop=*/false);
+
+    CHECK(streamer.Count() == 4);
+    REQUIRE(streamer.HasEnergyRange());
+    CHECK(streamer.EMin() == Approx(1.0));
+    CHECK(streamer.EMax() == Approx(4.0));
+    CHECK(streamer.Next().ray.POT() == Approx(25.0));
+}
+
+// ...and the byte-scan fallback must agree with it ray for ray on a file the
+// converter did not survey.
+TEST_CASE("HepMCFluxStreamer counts rays without the recorded count", "[FluxStreamer]") {
+    const auto surveyed = WriteHepMCFlux("nugeom_streamer_count_a.hepmc", 7, /*survey=*/true);
+    const auto bare = WriteHepMCFlux("nugeom_streamer_count_b.hepmc", 7, /*survey=*/false);
+
+    NuGeom::HepMCFluxStreamer a(surveyed, /*loop=*/false);
+    NuGeom::HepMCFluxStreamer b(bare, /*loop=*/false);
+    CHECK(a.Count() == b.Count());
+    CHECK(b.Count() == 7);
+    CHECK(a.Next().ray.POT() == Approx(b.Next().ray.POT()));
 }

@@ -181,7 +181,56 @@ def total_pot(files):
     return pot
 
 
-def make_run_info(files, pot, location, offset, window):
+def survey_rays(files, loc, flavor, max_events, step):
+    """Count the rays that will be written and find their energy range.
+
+    HepMC3 ASCII stores the run info ahead of the first event, so these have to
+    be known before the writing loop starts. NuGeometry reads them back as
+    NuGeom.Flux.NRays / NuGeom.Flux.EnergyRange_GeV, which is what lets its
+    flux streamer normalize POT per ray and check the generator's energy
+    coverage without ever scanning the converted file. Skipping this survey
+    only costs NuGeometry a cheap byte-count pass at open time, so the filters
+    below must mirror the writing loop's exactly or the POT normalization
+    silently drifts.
+    """
+    sources = [f"{f}:dk2nuTree" for f in files]
+    branches = ["dk2nu/decay/decay.ntype", "dk2nu/decay/decay.nimpwt",
+                "dk2nu/nuray/nuray.E", "dk2nu/nuray/nuray.wgt"]
+    n = 0
+    emin, emax = np.inf, -np.inf
+    for chunk in uproot.iterate(sources, branches, step_size=step, library="np"):
+        ntype = chunk["dk2nu/decay/decay.ntype"]
+        nimpwt = chunk["dk2nu/decay/decay.nimpwt"]
+        E = np.array([r[loc] for r in chunk["dk2nu/nuray/nuray.E"]])
+        wgt = np.array([r[loc] for r in chunk["dk2nu/nuray/nuray.wgt"]])
+
+        keep = np.ones(len(ntype), dtype=bool)
+        if flavor is not None:
+            keep &= (ntype.astype(int) == flavor)
+        w = nimpwt * wgt * WGT_TO_PER_CM2
+        keep &= np.isfinite(w) & (w > 0.0)
+
+        if max_events is not None and n + int(keep.sum()) >= max_events:
+            # Honour the same cut-off as the writing loop: keep only the first
+            # (max_events - n) surviving rays of this chunk.
+            idx = np.flatnonzero(keep)[: max_events - n]
+            keep = np.zeros(len(ntype), dtype=bool)
+            keep[idx] = True
+            n += int(keep.sum())
+            if keep.any():
+                emin = min(emin, float(E[keep].min()))
+                emax = max(emax, float(E[keep].max()))
+            break
+
+        n += int(keep.sum())
+        if keep.any():
+            emin = min(emin, float(E[keep].min()))
+            emax = max(emax, float(E[keep].max()))
+    return n, emin, emax
+
+
+def make_run_info(files, pot, location, offset, window, nrays=0,
+                  energy_range=None):
     width, height = window
     area = width * height if (width > 0.0 and height > 0.0) else 1.0
     ri = GenRunInfo()
@@ -208,6 +257,14 @@ def make_run_info(files, pot, location, offset, window):
         "NuGeom.FluxWindow.Size_cm": f"{float(width)!r},{float(height)!r}",
         "NuGeom.SourceFiles": ";".join(files),
     }
+    # Lets NuGeometry's flux streamer open the file without reading it: the
+    # count normalizes POT per ray, the range tells the generator which beam
+    # energies it must cover. See survey_rays().
+    if nrays:
+        ri.attributes["NuGeom.Flux.NRays"] = str(int(nrays))
+    if energy_range is not None:
+        emin, emax = energy_range
+        ri.attributes["NuGeom.Flux.EnergyRange_GeV"] = f"{float(emin)!r},{float(emax)!r}"
     return ri
 
 
@@ -240,7 +297,13 @@ def main():
         print("No beam->detector offset given; recording identity. NuGeometry "
               "applies the transform at load.")
 
-    run_info = make_run_info(args.files, pot, loc, args.det_offset, window)
+    n_survey, e_lo, e_hi = survey_rays(args.files, loc, args.flavor,
+                                       args.max_events, args.step)
+    print(f"Survey: {n_survey} rays, E in [{e_lo:.6g}, {e_hi:.6g}] GeV")
+
+    run_info = make_run_info(args.files, pot, loc, args.det_offset, window,
+                             nrays=n_survey,
+                             energy_range=(e_lo, e_hi) if n_survey else None)
     sources = [f"{f}:dk2nuTree" for f in args.files]
 
     n_written = 0
@@ -336,6 +399,12 @@ def main():
     print(f"Wrote {n_written} events to {out}"
           + (f" ({n_skipped} skipped: non-finite or non-positive weight)"
              if n_skipped else ""))
+    # NuGeom.Flux.NRays is what NuGeometry divides the file POT by, so a survey
+    # that disagrees with what was written would misnormalize every run.
+    if n_written != n_survey:
+        print(f"WARNING: survey predicted {n_survey} rays but {n_written} were "
+              f"written; NuGeom.Flux.NRays is wrong and the per-ray POT will be "
+              f"off by {n_survey / max(n_written, 1):.6f}. Please report this.")
 
 
 if __name__ == "__main__":

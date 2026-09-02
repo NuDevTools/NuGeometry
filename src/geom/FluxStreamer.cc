@@ -22,8 +22,10 @@
 #include <array>
 #include <cmath>
 #include <cstdlib>
+#include <fstream>
 #include <sstream>
 #include <stdexcept>
+#include <vector>
 
 namespace {
 
@@ -198,100 +200,159 @@ bool CSVFluxStreamer::TryNext(FluxSample &fs) {
 HepMCFluxStreamer::HepMCFluxStreamer(const std::string &path, bool loop,
                                      const Vector3D *offset_override)
     : FluxStreamer(path, loop) {
-    Summarize(offset_override);
+    ReadMetadata(offset_override);
     Rewind();
 }
 
 HepMCFluxStreamer::~HepMCFluxStreamer() = default;
 
-void HepMCFluxStreamer::Summarize(const Vector3D *offset_override) {
+namespace {
+
+// Count HepMC3 ASCII event records without parsing them.  Every event begins a
+// line with "E "; no other record type does, and the file's own header/footer
+// lines start with "HepMC::".  Reading raw blocks and scanning for the marker
+// costs a single sequential pass at I/O speed, against the ~20x more expensive
+// alternative of materializing a GenEvent (with its vertices and particles)
+// per ray only to throw it away.
+std::size_t CountHepMCEvents(const std::string &path) {
+    std::ifstream in(path, std::ios::binary);
+    if(!in) throw std::runtime_error("FluxStreamer: cannot open flux file: " + path);
+
+    constexpr std::size_t kBlock = 1 << 20;
+    std::vector<char> buf(kBlock);
+    std::size_t count = 0;
+    bool at_line_start = true;
+    // "E " can straddle a block boundary: remember a trailing 'E' seen at the
+    // start of a line so the following block's first byte can complete it.
+    bool pending_e = false;
+
+    while(in) {
+        in.read(buf.data(), static_cast<std::streamsize>(kBlock));
+        const std::size_t n = static_cast<std::size_t>(in.gcount());
+        for(std::size_t i = 0; i < n; ++i) {
+            const char c = buf[i];
+            if(pending_e) {
+                if(c == ' ') ++count;
+                pending_e = false;
+                at_line_start = (c == '\n');
+                continue;
+            }
+            if(at_line_start && c == 'E') {
+                pending_e = true;
+                continue;
+            }
+            at_line_start = (c == '\n');
+        }
+    }
+    return count;
+}
+
+} // namespace
+
+void HepMCFluxStreamer::ReadMetadata(const Vector3D *offset_override) {
+    // One event is enough: HepMC3 attaches the run info to every event it
+    // reads, so the run-level attributes are available after the first record.
     HepMC3::ReaderAscii reader(m_path);
     if(reader.failed()) throw std::runtime_error("FluxStreamer: cannot open flux file: " + m_path);
 
-    bool metadata_read = false;
-    std::size_t n_skipped = 0;
     HepMC3::GenEvent evt;
-    FluxSample fs;
-    while(true) {
-        reader.read_event(evt);
-        if(reader.failed()) break; // clean EOF or read error -> stop
+    reader.read_event(evt);
+    if(reader.failed())
+        throw std::runtime_error("FluxStreamer: no events found in flux file: " + m_path);
 
-        if(!metadata_read) {
-            const auto &ri = evt.run_info();
-            const std::string pot_s = RunAttr(ri, "NuHepMC.Exposure.POT");
-            if(!pot_s.empty()) {
-                try {
-                    m_pot = std::stod(pot_s);
-                } catch(const std::exception &) {
-                    NuGeom::Log().warn("FluxStreamer: could not parse NuHepMC.Exposure.POT='{}'",
-                                       pot_s);
-                }
-            }
-
-            if(offset_override) {
-                m_offset = *offset_override;
-                NuGeom::Log().info(
-                    "FluxStreamer: overriding recorded transform with ({}, {}, {}) cm",
-                    m_offset.X(), m_offset.Y(), m_offset.Z());
-            } else {
-                const std::string t_s = RunAttr(ri, "NuGeom.BeamToDetector.Translation_cm");
-                if(t_s.empty())
-                    NuGeom::Log().warn("FluxStreamer: no NuGeom.BeamToDetector.Translation_cm in "
-                                       "'{}'; applying identity transform",
-                                       m_path);
-                else
-                    m_offset = ParseTriplet(t_s, "NuGeom.BeamToDetector.Translation_cm");
-            }
-
-            const std::string area_s = RunAttr(ri, "NuGeom.FluxWindow.Area_cm2");
-            if(!area_s.empty()) {
-                try {
-                    m_window_area = std::stod(area_s);
-                } catch(const std::exception &) {
-                    NuGeom::Log().warn(
-                        "FluxStreamer: could not parse NuGeom.FluxWindow.Area_cm2='{}'", area_s);
-                }
-            } else {
-                NuGeom::Log().warn(
-                    "FluxStreamer: no NuGeom.FluxWindow.Area_cm2 in '{}'; using 1.0 cm^2 "
-                    "(event rate will be the per-cm^2 flux rate, NOT integrated over the "
-                    "detector face -- regenerate the flux with a flux window to fix the "
-                    "normalization)",
-                    m_path);
-            }
-
-            const std::string unit = RunAttr(ri, "NuGeom.LengthUnit");
-            if(!unit.empty() && unit != "cm")
-                NuGeom::Log().warn("FluxStreamer: file length unit is '{}', not 'cm'; the "
-                                   "transform is in cm and positions are read in the event's "
-                                   "native unit -- check consistency",
-                                   unit);
-            metadata_read = true;
+    const auto &ri = evt.run_info();
+    const std::string pot_s = RunAttr(ri, "NuHepMC.Exposure.POT");
+    if(!pot_s.empty()) {
+        try {
+            m_pot = std::stod(pot_s);
+        } catch(const std::exception &) {
+            NuGeom::Log().warn("FluxStreamer: could not parse NuHepMC.Exposure.POT='{}'", pot_s);
         }
-
-        if(!ExtractHepMCRay(evt, m_offset, 1.0, m_window_area, fs)) {
-            ++n_skipped;
-            continue;
-        }
-        ++m_count;
-        m_emin = std::min(m_emin, fs.energy);
-        m_emax = std::max(m_emax, fs.energy);
     }
 
-    if(m_count == 0)
-        throw std::runtime_error("FluxStreamer: no neutrino rays parsed from " + m_path);
+    if(offset_override) {
+        m_offset = *offset_override;
+        NuGeom::Log().info("FluxStreamer: overriding recorded transform with ({}, {}, {}) cm",
+                           m_offset.X(), m_offset.Y(), m_offset.Z());
+    } else {
+        const std::string t_s = RunAttr(ri, "NuGeom.BeamToDetector.Translation_cm");
+        if(t_s.empty())
+            NuGeom::Log().warn("FluxStreamer: no NuGeom.BeamToDetector.Translation_cm in "
+                               "'{}'; applying identity transform",
+                               m_path);
+        else
+            m_offset = ParseTriplet(t_s, "NuGeom.BeamToDetector.Translation_cm");
+    }
+
+    const std::string area_s = RunAttr(ri, "NuGeom.FluxWindow.Area_cm2");
+    if(!area_s.empty()) {
+        try {
+            m_window_area = std::stod(area_s);
+        } catch(const std::exception &) {
+            NuGeom::Log().warn("FluxStreamer: could not parse NuGeom.FluxWindow.Area_cm2='{}'",
+                               area_s);
+        }
+    } else {
+        NuGeom::Log().warn("FluxStreamer: no NuGeom.FluxWindow.Area_cm2 in '{}'; using 1.0 cm^2 "
+                           "(event rate will be the per-cm^2 flux rate, NOT integrated over the "
+                           "detector face -- regenerate the flux with a flux window to fix the "
+                           "normalization)",
+                           m_path);
+    }
+
+    const std::string unit = RunAttr(ri, "NuGeom.LengthUnit");
+    if(!unit.empty() && unit != "cm")
+        NuGeom::Log().warn("FluxStreamer: file length unit is '{}', not 'cm'; the "
+                           "transform is in cm and positions are read in the event's "
+                           "native unit -- check consistency",
+                           unit);
+
+    // Ray count: only needed to turn the file POT into a per-ray exposure.
+    const std::string n_s = RunAttr(ri, "NuGeom.Flux.NRays");
+    if(!n_s.empty()) {
+        try {
+            m_count = static_cast<std::size_t>(std::stoull(n_s));
+        } catch(const std::exception &) {
+            NuGeom::Log().warn("FluxStreamer: could not parse NuGeom.Flux.NRays='{}'", n_s);
+        }
+    }
+    if(m_count == 0) {
+        NuGeom::Log().info("FluxStreamer: '{}' has no NuGeom.Flux.NRays attribute; counting "
+                           "event records (regenerate the flux to record the count and skip "
+                           "this pass)",
+                           m_path);
+        m_count = CountHepMCEvents(m_path);
+    }
+    if(m_count == 0) throw std::runtime_error("FluxStreamer: no rays found in " + m_path);
+
+    // Energy range: reported only if the file records it.  Deriving it means
+    // reading every ray, which is what this streamer exists to avoid.
+    const std::string e_s = RunAttr(ri, "NuGeom.Flux.EnergyRange_GeV");
+    if(!e_s.empty()) {
+        const auto comma = e_s.find(',');
+        try {
+            m_emin = std::stod(e_s.substr(0, comma));
+            m_emax = std::stod(e_s.substr(comma + 1));
+        } catch(const std::exception &) {
+            NuGeom::Log().warn("FluxStreamer: could not parse NuGeom.Flux.EnergyRange_GeV='{}'",
+                               e_s);
+        }
+    }
 
     // POT carried per ray so a full pass over the file reproduces the recorded
     // beam exposure (same normalization as LoadHepMCFlux on a full load).
     m_pot_per_ray = m_pot > 0.0 ? m_pot / static_cast<double>(m_count) : 1.0;
 
-    NuGeom::Log().info("FluxStreamer: '{}' has {} rays (E in [{}, {}] GeV, POT={:.6e}, "
-                       "window_area={:.6e} cm^2, offset=({}, {}, {}) cm)",
-                       m_path, m_count, m_emin, m_emax, m_pot, m_window_area, m_offset.X(),
-                       m_offset.Y(), m_offset.Z());
-    if(n_skipped)
-        NuGeom::Log().warn("FluxStreamer: skipped {} events without a usable neutrino ray",
-                           n_skipped);
+    if(HasEnergyRange())
+        NuGeom::Log().info("FluxStreamer: '{}' has {} rays (E in [{}, {}] GeV, POT={:.6e}, "
+                           "window_area={:.6e} cm^2, offset=({}, {}, {}) cm)",
+                           m_path, m_count, m_emin, m_emax, m_pot, m_window_area, m_offset.X(),
+                           m_offset.Y(), m_offset.Z());
+    else
+        NuGeom::Log().info("FluxStreamer: '{}' has {} rays (energy range not recorded, POT={:.6e}, "
+                           "window_area={:.6e} cm^2, offset=({}, {}, {}) cm)",
+                           m_path, m_count, m_pot, m_window_area, m_offset.X(), m_offset.Y(),
+                           m_offset.Z());
 }
 
 void HepMCFluxStreamer::Rewind() {

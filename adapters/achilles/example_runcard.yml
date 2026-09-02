@@ -15,10 +15,21 @@ Driver:
   Output: achilles_geom.hepmc
   Mode: envelope            # envelope (max-weight layer 1, single shot)
                             # or total (sigma_tot layer 1, retry until emit)
+                            # NOTE: with a partial unweighter (Achilles' default
+                            # Percentile) the two modes' RAW EVENT COUNTS differ
+                            # by <weight>: compare sum(weights)/POT in envelope
+                            # mode against events/POT in total mode.  Both are
+                            # printed at the end of the run.
   AutoEnergyRange: true     # widen the Achilles Beam/EnergyRange to cover the
-                            # streamed ray energies (default true); false keeps
-                            # the run card's range as an energy cut
-  InitRays: 1000            # rays used to calibrate max_prob
+                            # flux's energies (default true).  Only possible if
+                            # the flux file records NuGeom.Flux.EnergyRange_GeV;
+                            # otherwise the range below is kept as an energy cut
+  InitRays: 500             # probe rays used to calibrate the layer-1 envelope.
+                            # These are chords NuGeometry generates through the
+                            # geometry itself, NOT flux rays: the flux file is
+                            # neither consumed nor read for the calibration
+  BurnInRays: 1000          # flux rays consumed (untraced, so ~free) to fix the
+                            # envelope's flux-weight scale before the run starts
   SafetyFactor: 1.5
   Verbosity: info           # trace|debug|info|warn|error|off (CLI --verbosity overrides)
   Run:                      # exactly one of:
