@@ -53,7 +53,41 @@ int main(int argc, char *argv[]) {
     std::cout
         << "   E [GeV]   sigma_spline [pb]   sigma_weights [pb]   +/-      ratio   emit_frac\n";
 
-    for(double E : {1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0}) {
+    const std::vector<double> grid{1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0};
+
+    // Interleaved pass: energies are visited in round-robin instead of in
+    // blocks, so Achilles' single adaptive max_w sees the same mixture it does
+    // in a real flux run.  If the per-energy emit probability drops relative to
+    // the blocked scan below, the shared scalar max_w is the culprit.
+    if(std::getenv("XSEC_SCAN_INTERLEAVE")) {
+        std::vector<std::size_t> acc(grid.size(), 0), emi(grid.size(), 0);
+        std::vector<double> sw(grid.size(), 0.0);
+        for(std::size_t i = 0; i < ntrials * grid.size(); ++i) {
+            const std::size_t k = i % grid.size();
+            const double e_mev = grid[k] * 1000.0;
+            achilles::FourVector p4{e_mev, 0.0, 0.0, e_mev};
+            gen.InjectRay(p4, nu, target);
+            ++acc[k];
+            if(gen.GenerateSingleEvent()) {
+                ++emi[k];
+                sw[k] += gen.LastEvent().Weight() * M * cm2_to_pb;
+            }
+        }
+        std::cout << "INTERLEAVED (shared adaptive max_w sees all energies)\n";
+        std::cout << "   E [GeV]   sigma_spline   sigma_weights   ratio   emit_frac\n";
+        for(std::size_t k = 0; k < grid.size(); ++k) {
+            const double spl = gen.TotalXSec(grid[k] * 1000.0, nu, target) * cm2_to_pb;
+            const double mean = sw[k] / static_cast<double>(acc[k]);
+            std::cout.precision(5);
+            std::cout << std::fixed << "   " << grid[k] << "        " << spl << "        " << mean
+                      << "     " << (spl > 0 ? mean / spl : 0.0) << "   "
+                      << static_cast<double>(emi[k]) / static_cast<double>(acc[k]) << "\n";
+        }
+        gen.Finalize();
+        return 0;
+    }
+
+    for(double E : grid) {
         const double e_mev = E * 1000.0;
         const double spline = gen.TotalXSec(e_mev, nu, target) * cm2_to_pb;
 

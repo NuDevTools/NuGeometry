@@ -467,3 +467,63 @@ these sample sizes; `envelope` mode's needs far more trials in the flux tails
 before its differential spectrum can be trusted, even though both modes'
 integrated rates agree to ~1%. This is a property of the estimator, not a bug in
 either mode.
+
+## CORRECTION: the "heavy-tailed estimator" explanation above is WRONG
+
+The section above argued the deficit was a convergence artifact of a
+heavy-tailed weighted estimator. Its own error analysis refutes it. Computing
+the weighted uncertainty properly, `sqrt(sum w^2)` instead of `sqrt(N)`:
+
+```
+envelope sum(w) = 96307.3, sqrt(sum w^2) = 323.6  -> rel err 0.0034
+naive sqrt(N)                                     -> rel err 0.0033
+```
+
+They differ by 3%. The *emitted* weights are not heavy-tailed (<w> ~ 1.03), so
+the error bars are essentially Poisson and the deficit is not marginal:
+
+| E_nu [GeV] | ratio | weighted err | significance |
+|---|---|---|---|
+| 3.0-4.0 | 1.034 | 0.010 | 3.5 sigma |
+| 4.0-5.0 | 0.952 | 0.020 | 2.5 sigma |
+| 5.0-6.0 | 0.828 | 0.033 | 5.2 sigma |
+| 6.0-8.0 | 0.804 | 0.032 | 6.1 sigma |
+| 8.0-10.0| 0.673 | 0.033 | **9.9 sigma** |
+
+The "top 1% of trials carry 18%" figure is mostly just the ~11% emit fraction
+(the top 1% of trials are all emitters), not a pathological tail. It does not
+support the conclusion drawn from it.
+
+### A constant vs spline max_w is also NOT the cause
+
+`XSEC_SCAN_INTERLEAVE=1 xsec_scan` visits the energies round-robin instead of in
+blocks, so Achilles' single adaptive scalar `max_w` sees the same energy mixture
+it does in a flux run -- the exact condition an energy-resolved max_w spline
+would remove. It does not reproduce the effect:
+
+```
+E [GeV]     emit_frac blocked   emit_frac interleaved   emit_frac IN THE RUN
+  5.0            0.1255                0.1165                 0.1055
+  8.0            0.1198                0.1065                 0.0860
+ 10.0            0.1154                0.1133                 0.0860 (8-10 bin)
+```
+
+Interleaving costs a few percent; the run is ~25% low. So replacing the constant
+`max_w` with a spline would not fix this.
+
+What a spline *would* buy is flatter unweighting efficiency: it currently tracks
+sigma(E)/max_w, running 0.084 at 1 GeV to 0.126 at 5 GeV, so an energy-resolved
+max_w would gain at most ~1.5x in sampling efficiency at the low end. That is a
+throughput improvement, not a correctness fix. It would also have to live inside
+Achilles' unweighter: the estimator identity requires the M used in
+`Weight() * M` to be the same max_w `AcceptEvent` divided by, so a spline on the
+NuGeometry side against a scalar max_w in Achilles would introduce a real bias.
+
+### Still open
+
+`total` emits on 0.9999 of accepted vertices at every energy because it retries;
+`envelope` takes one shot and its per-trial emit probability in the run sits
+~25% (3+ sigma per bin) below the fixed-energy scan above 5 GeV. Both scans --
+blocked and interleaved -- inject along +z, whereas the run injects each ray's
+actual lab direction through the GeometryBeam rotation path. That is the main
+untested difference and is where to look next.
