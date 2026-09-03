@@ -2,6 +2,7 @@
 
 #include "geom/LineSegment.hh"
 #include "geom/Parser.hh"
+#include "geom/Random.hh"
 #include "geom/Ray.hh"
 #include "geom/World.hh"
 
@@ -408,4 +409,42 @@ TEST_CASE("ROOT cross-check emitter", "[.][xcheck]") {
         fs << "\n";
     }
     std::cerr << "  [xcheck] wrote " << nrays << " rays for " << gdml << "\n";
+}
+
+// Isolated cost of ONE layer-1 traversal on the DUNE ND hall: wall time and
+// heap allocations for GetColumnLengths vs GetLineSegmentsSweep.  Run under
+// LD_PRELOAD of an operator-new counter to get the allocation figure.
+TEST_CASE("Layer-1 traversal cost", "[.][travcost]") {
+    std::string gdml = std::string(NUGEOM_SOURCE_DIR) + "/nd_hall_with_lar_tms_nosand.gdml";
+    NuGeom::GDMLParser parse(gdml);
+    auto world = parse.GetWorld();
+
+    const char *nr = std::getenv("BENCH_NRAYS");
+    const size_t nrays = nr ? std::strtoul(nr, nullptr, 10) : 2000;
+    std::vector<NuGeom::Ray> rays;
+    rays.reserve(nrays);
+    NuGeom::Random::Instance().Seed(20260902);
+    for(size_t i = 0; i < nrays; ++i) {
+        const double x = NuGeom::Random::Instance().Uniform(-350.0, 350.0);
+        const double y = NuGeom::Random::Instance().Uniform(-170.0, 170.0);
+        rays.emplace_back(NuGeom::Vector3D(x, y, -30000.0), NuGeom::Vector3D(0, 0, 1), 1.0);
+    }
+
+    auto timeit = [&](const char *label, auto fn) {
+        double best_ms = 1e30;
+        size_t total = 0;
+        for(size_t s = 0; s < 3; ++s) {
+            auto t0 = std::chrono::high_resolution_clock::now();
+            total = 0;
+            for(const auto &r : rays) total += fn(r).size();
+            auto t1 = std::chrono::high_resolution_clock::now();
+            best_ms = std::min(best_ms, std::chrono::duration<double, std::milli>(t1 - t0).count());
+        }
+        std::cout << "  " << label << ": " << best_ms * 1000.0 / static_cast<double>(nrays)
+                  << " us/ray (" << total << " entries)\n";
+    };
+    timeit("GetColumnLengths  ", [&](const NuGeom::Ray &r) { return world.GetColumnLengths(r); });
+    timeit("GetLineSegmentsSwp",
+           [&](const NuGeom::Ray &r) { return world.GetLineSegmentsSweep(r); });
+    CHECK(true);
 }
