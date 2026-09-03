@@ -602,3 +602,60 @@ differs, and neither angle is degenerate. This is an Achilles-side defect on the
 uses -- and it corrupts the event weights for those configurations in BOTH
 modes; `total` merely hides it by retrying, since its rate estimator counts
 events rather than summing weights.
+
+### The trigger: SetInjected leaves the neutrino one ULP SPACELIKE
+
+Not the adapter -- `xsec_scan` calls `EventGen` directly and never touches
+`AchillesAdapter`. The cause is in Achilles, `src/Achilles/Beams.cc:95-100`:
+
+```cpp
+void achilles::GeometryBeam::SetInjected(const FourVector &lab_ray) {
+    static const FourVector zaxis{0, 0, 0, 1};
+    m_rotation = Poincare(lab_ray, zaxis);
+    m_injected = m_rotation * lab_ray;      // <-- rounding leaves |p| != E
+}
+```
+
+The rotation is exact in exact arithmetic -- every angle lands on (E, 0, 0, E),
+verified directly -- but in floating point it can leave `|p|` one ULP ABOVE `E`,
+making the massless neutrino slightly **spacelike**, m^2 = E^2 - |p|^2 < 0.
+
+Trace-diffing a single trial at theta = 0 vs theta = 1 deg: 93855 identical
+lines, then
+
+```
+[debug] MassCheck: true                                        theta=0
+[debug] MassCheck: false                                       theta=1
+FourVector(8.0e+03, 0.00000000e+00, 0, 8.0e+03)                theta=0
+FourVector(8.0e+03, 1.42108547e-13, 0, 8.0e+03)                theta=1
+```
+
+The residue is the ONLY difference, and it correlates perfectly with the
+collapse over 30 angles (20 + 10 in two independent scans):
+
+```
+spacelike (|p|-E = +9.09e-13)  & collapse :  6     & ok :  0
+not spacelike (0 or negative)  & collapse :  0     & ok : 24
+```
+
+That also explains the ~7 GeV threshold: |m^2| ~ 2 E * ULP(E) grows as E^2
+(-1.5e-8 MeV^2 at 8 GeV, -9e-10 at 2 GeV), so a fixed absolute tolerance
+downstream is only crossed at high energy. Note the sign matters: a vector left
+one ULP *timelike* is harmless; only spacelike breaks.
+
+**Fix (Achilles side).** The rotation is defined to put the ray on +z, so
+re-impose that exactly instead of trusting the rounded product:
+
+```cpp
+m_rotation = Poincare(lab_ray, zaxis);
+// Rounding can leave |p| one ULP above E -- a spacelike neutrino, which the
+// phase-space mappers cannot absorb (weights collapse ~9x above ~7 GeV).
+const double p = std::sqrt(std::max(0.0, lab_ray.E() * lab_ray.E() - lab_ray.M2()));
+m_injected = {lab_ray.E(), 0.0, 0.0, p};
+```
+
+What is *proven*: collapse iff the injected vector is spacelike (30/30), and the
+residue is the first divergence in otherwise bit-identical traces. What is
+*inferred*: that a downstream phase-space mapper cannot handle m^2 < 0 -- the
+exact line was not pinpointed (`CheckMasses` is only a debug print, a symptom
+rather than the gate).

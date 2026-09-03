@@ -18,7 +18,9 @@
 #include "Achilles/EventGen.hh"
 #include "Achilles/FourVector.hh"
 #include "Achilles/ParticleInfo.hh"
+#include "Achilles/Poincare.hh"
 
+#include "spdlog/spdlog.h"
 #include "yaml-cpp/yaml.h"
 
 #include <algorithm>
@@ -35,6 +37,42 @@ int main(int argc, char *argv[]) {
     }
     const std::string card = argv[1];
     const std::size_t ntrials = argc > 2 ? std::strtoul(argv[2], nullptr, 10) : 20000;
+
+    // XSEC_SCAN_ROTATE: exercise only the rotation GeometryBeam::SetInjected
+    // applies (Poincare(lab_ray, zaxis)), with no generator at all.  Every angle
+    // should land on (E, 0, 0, E); anything else is the bug.
+    if(std::getenv("XSEC_SCAN_ROTATE")) {
+        const double E = 8000.0;
+        const achilles::FourVector zaxis{0, 0, 0, 1};
+        std::cout << "  theta[deg]      E          px            py            pz"
+                     "        |p|-E\n";
+        std::vector<double> rangles{0.0, 0.2, 1.0, 1.5, 2.0, 3.0, 5.0, 8.0, 12.0, 30.0};
+        if(const char *lst = std::getenv("XSEC_SCAN_ANGLES")) {
+            rangles.clear();
+            std::string t(lst);
+            std::size_t pos = 0;
+            while(pos < t.size()) {
+                std::size_t c = t.find(',', pos);
+                if(c == std::string::npos) c = t.size();
+                rangles.push_back(std::strtod(t.substr(pos, c - pos).c_str(), nullptr));
+                pos = c + 1;
+            }
+        }
+        for(double deg : rangles) {
+            const double th = deg * M_PI / 180.0;
+            achilles::FourVector lab{E, E * std::sin(th), 0.0, E * std::cos(th)};
+            achilles::Poincare rot(lab, zaxis);
+            const achilles::FourVector inj = rot * lab;
+            const double p =
+                std::sqrt(inj.Px() * inj.Px() + inj.Py() * inj.Py() + inj.Pz() * inj.Pz());
+            std::cout.precision(6);
+            std::cout << std::scientific << "  theta=" << deg << "  px_residue=" << inj.Px()
+                      << "  py_residue=" << inj.Py() << "  |p|-E=" << (p - inj.E()) << "\n";
+        }
+        return 0;
+    }
+
+    if(std::getenv("XSEC_SCAN_TRACE")) spdlog::set_level(spdlog::level::trace);
 
     YAML::Node root = YAML::LoadFile(card);
     // The driver run cards nest the Achilles config under "Achilles:".
