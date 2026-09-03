@@ -18,6 +18,7 @@ add_executable(nugeometry-testsuite
     test_bvh.cc
     test_detsim.cc
     test_flux_streamer.cc
+    test_prune.cc
     bench_segments.cc
 )
 target_link_libraries(nugeometry-testsuite PRIVATE project_options project_warnings catch_main 

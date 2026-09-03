@@ -479,3 +479,74 @@ TEST_CASE("Custom-ray Init requires an energy range", "[DetectorSim][Init]") {
         std::make_shared<NuGeom::MockGenerator>([](double, int, int) { return 1e-38; }));
     CHECK_THROWS_WITH(sim.Init(8), Catch::Contains("energy range"));
 }
+
+// ---------------------------------------------------------------------------
+// Two-stage layer-1 rejection is an exact restructuring of the acceptance, not
+// an approximation: it must reproduce the same rate while tracing far fewer
+// rays.  A heavy-tailed flux is the interesting case -- that is where stage 1
+// pays off, and where a bad factorization would bias the rate.
+// ---------------------------------------------------------------------------
+namespace {
+
+struct TwoStageRun {
+    double rate;
+    std::size_t thrown, traversed, stage1_rejected;
+};
+
+TwoStageRun RunTwoStage(bool two_stage, unsigned seed) {
+    constexpr double sigma = 1e-38;
+    // Four decades of flux weight: only the heaviest rays are worth tracing.
+    const std::vector<double> weights = {0.0001, 0.001, 0.01, 0.1, 1.0};
+
+    NuGeom::Random::Instance().Seed(seed);
+    NuGeom::DetectorSim sim(1.0);
+    DetSimFixture::SetupSim(sim);
+    sim.SetTwoStageRejection(two_stage);
+    auto counter = std::make_shared<std::size_t>(0);
+    sim.SetFluxCallback([counter, weights]() {
+        NuGeom::FluxSample fs;
+        fs.energy = 1.0;
+        fs.pdg = 14;
+        fs.ray = NuGeom::Ray({0, 0, -100}, {0, 0, 1}, DetSimFixture::ray_pot);
+        fs.flux_weight = weights[(*counter)++ % weights.size()];
+        return fs;
+    });
+    sim.SetGenerator(
+        std::make_shared<NuGeom::MockGenerator>([](double, int, int) { return sigma; }));
+    sim.SetEnergyRange(0.5, 5.0);
+    sim.SetFluxSpecies({14});
+    sim.Init(64);
+
+    constexpr std::size_t nevents = 4000;
+    sim.GenerateEvents(nevents);
+    const auto &st = sim.GetRunStats();
+    return {static_cast<double>(nevents) / sim.GetAccumulatedPOT(), st.thrown, st.traversed,
+            st.stage1_rejected};
+}
+
+} // namespace
+
+TEST_CASE("Two-stage rejection reproduces the one-stage rate", "[DetectorSim][TwoStage]") {
+    const auto one = RunTwoStage(false, 20260814);
+    const auto two = RunTwoStage(true, 20260814);
+
+    // Same physical rate.  Both are 4000-event samples, so ~1.6% statistical
+    // spread each; 5% covers it comfortably without hiding a real bias.
+    CHECK(two.rate == Approx(one.rate).epsilon(0.05));
+
+    // One-stage traces every ray it throws; two-stage must trace far fewer.
+    CHECK(one.stage1_rejected == 0);
+    CHECK(one.traversed == one.thrown);
+    CHECK(two.stage1_rejected > 0);
+    CHECK(two.traversed < two.thrown / 2);
+}
+
+TEST_CASE("Two-stage rejection still charges POT for untraced rays",
+          "[DetectorSim][TwoStage][POT]") {
+    const auto one = RunTwoStage(false, 20260901);
+    const auto two = RunTwoStage(true, 20260901);
+    // POT is charged per *thrown* ray, so skipping a traversal must not skip
+    // the exposure: rate = events/POT stays put even though `traversed` drops.
+    CHECK(two.rate == Approx(one.rate).epsilon(0.05));
+    CHECK(two.traversed + two.stage1_rejected <= two.thrown);
+}

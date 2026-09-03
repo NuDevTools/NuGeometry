@@ -5,6 +5,7 @@
 #include "geom/Logging.hh"
 #include "geom/Ray.hh"
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <limits>
 #include <map>
@@ -35,6 +36,106 @@ World::World(std::shared_ptr<NuGeom::LogicalVolume> volume) : m_volume{std::move
                                                          0 /* tag: pre-computed transform */);
     // Build unique PV tree: top-level daughters get m_root_pv as their mother.
     BuildUniqueTree(m_root_pv, nullptr);
+}
+
+namespace {
+
+/// Number of placed volumes in a subtree, counting the root.
+size_t SubtreeNodes(const std::shared_ptr<NuGeom::PhysicalVolume> &pv) {
+    size_t n = 1;
+    for(const auto &d : pv->Daughters()) n += SubtreeNodes(d);
+    return n;
+}
+
+/// Rebuild `pv`'s daughter list, dropping the ones that match, and recurse into
+/// the survivors.  Decisions are taken against the *unpruned* total mass so the
+/// threshold means the same thing at every depth.
+void PruneRecursive(const std::shared_ptr<NuGeom::PhysicalVolume> &pv,
+                    const NuGeom::World::PruneOptions &opts, double total_mass,
+                    NuGeom::World::PruneReport &report) {
+    std::vector<std::shared_ptr<NuGeom::PhysicalVolume>> kept;
+    kept.reserve(pv->Daughters().size());
+    const auto &mother = pv->GetLogicalVolume()->GetMaterial();
+
+    for(const auto &d : pv->Daughters()) {
+        const auto &lv = d->GetLogicalVolume();
+        const std::string name = d->Name().empty() ? lv->Name() : d->Name();
+        const std::string mat = lv->GetMaterial().Name();
+
+        std::string reason;
+        if(opts.keep_volumes.count(name) == 0) {
+            if(opts.drop_materials.count(mat) > 0) {
+                reason = "material";
+            } else if(opts.min_mass_fraction > 0.0 &&
+                      lv->Mass() < opts.min_mass_fraction * total_mass) {
+                reason = "mass fraction";
+            }
+        }
+
+        if(reason.empty()) {
+            kept.push_back(d);
+            PruneRecursive(d, opts, total_mass, report);
+            continue;
+        }
+
+        NuGeom::World::PruneReport::Entry e;
+        e.volume = name;
+        e.material = mat;
+        e.replaced_by = mother.Name();
+        e.mass = lv->Mass();
+        e.fraction = total_mass > 0 ? e.mass / total_mass : 0.0;
+        // The hole left behind is filled by the mother, so the geometry's mass
+        // changes by (displaced volume x mother density) - (mass removed).
+        e.mass_delta = lv->GetShape()->Volume() * mother.Density() - e.mass;
+        e.nodes = SubtreeNodes(d);
+        e.reason = reason;
+
+        report.removed_subtrees += 1;
+        report.removed_nodes += e.nodes;
+        report.removed_mass += e.mass;
+        report.mass_delta += e.mass_delta;
+        report.entries.push_back(std::move(e));
+    }
+
+    pv->SetOwnDaughters(std::move(kept));
+}
+
+} // namespace
+
+NuGeom::World::PruneReport NuGeom::World::Prune(const PruneOptions &opts) {
+    PruneReport report;
+    if(!m_volume || !m_root_pv) return report;
+
+    report.total_mass = m_volume->Mass();
+    if(!(report.total_mass > 0.0)) {
+        NuGeom::Log().warn("World::Prune: world mass is {} -- nothing pruned. A mass-fraction "
+                           "threshold is meaningless without densities.",
+                           report.total_mass);
+        return report;
+    }
+    if(opts.min_mass_fraction <= 0.0 && opts.drop_materials.empty()) return report;
+
+    PruneRecursive(m_root_pv, opts, report.total_mass, report);
+
+    NuGeom::Log().info(
+        "World::Prune: removed {} subtrees ({} placed volumes) carrying {:.4e} g = {:.4f}% of the "
+        "{:.4e} g world mass; net geometry mass change {:+.4e} g ({:+.4f}%) after the mothers "
+        "fill the gaps.",
+        report.removed_subtrees, report.removed_nodes, report.removed_mass,
+        100.0 * report.RemovedMassFraction(), report.total_mass, report.mass_delta,
+        100.0 * report.MassDeltaFraction());
+    for(const auto &e : report.entries) {
+        NuGeom::Log().debug("World::Prune:   dropped {} ({}, {} nodes, {:.3e} g = {:.4f}%, {}) -> "
+                            "space now {}",
+                            e.volume, e.material, e.nodes, e.mass, 100.0 * e.fraction, e.reason,
+                            e.replaced_by);
+    }
+    if(std::abs(report.MassDeltaFraction()) > 0.01)
+        NuGeom::Log().warn("World::Prune: pruning changed the geometry mass by {:+.2f}%. That is "
+                           "not a small perturbation -- the dropped volumes' space is now mother "
+                           "material, which changes interaction rates.",
+                           100.0 * report.MassDeltaFraction());
+    return report;
 }
 
 NuGeom::Shape *World::GetShape(size_t idx) const {
@@ -140,16 +241,23 @@ std::vector<NuGeom::LineSegment> World::GetLineSegmentsSequential(const Ray &ray
     return PruneSegments(std::move(segments));
 }
 
-std::vector<NuGeom::LineSegment> World::GetLineSegmentsSweep(const Ray &ray) const {
-    if(!m_volume) throw std::runtime_error("NuGeom: World does not have a volume!");
+namespace {
 
+/// Shared core of the boundary sweep.  Collects every volume crossing along the
+/// ray in one tree descent, orders them, and calls `emit(material, t0, t1)` for
+/// each stretch of constant material.  Both the LineSegment traversal and the
+/// column-density-only traversal are thin wrappers around this, so they cannot
+/// drift apart.
+template <typename Emit>
+void SweepCore(const std::shared_ptr<NuGeom::PhysicalVolume> &root, const NuGeom::Ray &ray,
+               Emit &&emit) {
     // 1. Collect every volume-crossing event along the ray in one tree descent.
     //    The root spans the whole forward ray; descendants are clipped to their
     //    parents so a protruding daughter cannot leak outside its mother.
     std::vector<NuGeom::IntervalEvent> events;
     constexpr double inf = std::numeric_limits<double>::infinity();
-    m_root_pv->CollectIntervals(ray, NuGeom::Transform3D{}, 0, 0.0, inf, events);
-    if(events.empty()) return {};
+    root->CollectIntervals(ray, NuGeom::Transform3D{}, 0, 0.0, inf, events);
+    if(events.empty()) return;
 
     // 2. Order boundaries along the ray.
     std::sort(
@@ -158,11 +266,10 @@ std::vector<NuGeom::LineSegment> World::GetLineSegmentsSweep(const Ray &ray) con
 
     // 3. Sweep.  `active` maps nesting depth -> material of the volume active at
     // that depth; properly nested geometry has at most one volume per depth
-    // active at any t, so the material is the deepest active entry.  A segment
+    // active at any t, so the material is the deepest active entry.  A stretch
     // spans from one boundary to the next, carrying the material in force there.
-    std::vector<NuGeom::LineSegment> segments;
-    std::map<int, const Material *> active;
-    const Material *cur_mat = nullptr;
+    std::map<int, const NuGeom::Material *> active;
+    const NuGeom::Material *cur_mat = nullptr;
     double seg_start = 0.0;
     const size_t n = events.size();
     for(size_t i = 0; i < n;) {
@@ -177,14 +284,45 @@ std::vector<NuGeom::LineSegment> World::GetLineSegmentsSweep(const Ray &ray) con
                 if(it != active.end() && it->second == e.material) active.erase(it);
             }
         }
-        // Emit the segment that ended at this boundary (material before it).
-        if(cur_mat && t > seg_start)
-            segments.emplace_back(ray.Propagate(seg_start), ray.Propagate(t), *cur_mat);
+        if(cur_mat && t > seg_start) emit(*cur_mat, seg_start, t);
         seg_start = t;
         cur_mat = active.empty() ? nullptr : active.rbegin()->second;
     }
+}
+
+} // namespace
+
+std::vector<NuGeom::LineSegment> World::GetLineSegmentsSweep(const Ray &ray) const {
+    if(!m_volume) throw std::runtime_error("NuGeom: World does not have a volume!");
+    std::vector<NuGeom::LineSegment> segments;
+    SweepCore(m_root_pv, ray, [&](const Material &mat, double t0, double t1) {
+        segments.emplace_back(ray.Propagate(t0), ray.Propagate(t1), mat);
+    });
+    if(segments.empty()) return {};
     NuGeom::Log().trace("World(sweep): Line Segments found -> {}", fmt::join(segments, ", "));
     return PruneSegments(std::move(segments));
+}
+
+std::vector<std::pair<const NuGeom::Material *, double>>
+World::GetColumnLengths(const Ray &ray) const {
+    if(!m_volume) throw std::runtime_error("NuGeom: World does not have a volume!");
+    // Layer-1 acceptance needs only sum(n_i sigma_i L_i), so skip building the
+    // LineSegment vector and its per-boundary Propagate/Norm entirely, and
+    // accumulate path length per material instead.  A ray crosses only a
+    // handful of distinct materials, so the linear search beats a map.
+    std::vector<std::pair<const Material *, double>> out;
+    const double dir_norm = ray.Direction().Norm();
+    SweepCore(m_root_pv, ray, [&](const Material &mat, double t0, double t1) {
+        const double len = (t1 - t0) * dir_norm;
+        for(auto &e : out) {
+            if(e.first == &mat) {
+                e.second += len;
+                return;
+            }
+        }
+        out.emplace_back(&mat, len);
+    });
+    return out;
 }
 
 std::vector<World::SweepOverlap> World::CheckSweepConsistency(const Ray &ray, bool warn) const {

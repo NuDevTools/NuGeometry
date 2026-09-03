@@ -99,6 +99,13 @@ class PhysicalVolume {
     }
     void AddOwnDaughter(std::shared_ptr<PhysicalVolume> d) {
         m_own_daughters.push_back(std::move(d));
+        m_bvh.reset();
+    }
+    /// Replace this volume's daughter list (used by World::Prune).  Drops the
+    /// cached BVH, which was built from the old list.
+    void SetOwnDaughters(std::vector<std::shared_ptr<PhysicalVolume>> d) {
+        m_own_daughters = std::move(d);
+        m_bvh.reset();
     }
     double SignedDistance(const Vector3D &in_point) const {
         auto point = TransformPoint(in_point);

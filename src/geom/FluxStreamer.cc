@@ -1,6 +1,8 @@
 #include "geom/FluxStreamer.hh"
 #include "geom/Logging.hh"
+#include "geom/Random.hh"
 #include "geom/Ray.hh"
+#include <algorithm>
 
 // HepMC3 headers trip our strict warnings; silence them here (same pattern as
 // HepMCFluxReader.cc).
@@ -339,6 +341,31 @@ void HepMCFluxStreamer::ReadMetadata(const Vector3D *offset_override) {
         }
     }
 
+    // Flux-weight summary, if the converter recorded it.  Knowing mean(w)
+    // without reading the file lets the driver report the importance-sampling
+    // payoff (max/mean) up front, and cross-checks the cache once it is built.
+    const std::string mw_s = RunAttr(ri, "NuGeom.Flux.MeanWeight");
+    if(!mw_s.empty()) {
+        try {
+            m_mean_weight = std::stod(mw_s);
+        } catch(const std::exception &) {
+            NuGeom::Log().warn("FluxStreamer: could not parse NuGeom.Flux.MeanWeight='{}'", mw_s);
+        }
+    }
+    const std::string tw_s = RunAttr(ri, "NuGeom.Flux.TotalWeight");
+    if(!tw_s.empty()) {
+        try {
+            m_total_weight = std::stod(tw_s);
+        } catch(const std::exception &) {
+            NuGeom::Log().warn("FluxStreamer: could not parse NuGeom.Flux.TotalWeight='{}'", tw_s);
+        }
+    }
+    // Either one implies the other given the ray count.
+    if(m_mean_weight <= 0.0 && m_total_weight > 0.0 && m_count > 0)
+        m_mean_weight = m_total_weight / static_cast<double>(m_count);
+    if(m_total_weight <= 0.0 && m_mean_weight > 0.0 && m_count > 0)
+        m_total_weight = m_mean_weight * static_cast<double>(m_count);
+
     // POT carried per ray so a full pass over the file reproduces the recorded
     // beam exposure (same normalization as LoadHepMCFlux on a full load).
     m_pot_per_ray = m_pot > 0.0 ? m_pot / static_cast<double>(m_count) : 1.0;
@@ -371,6 +398,184 @@ bool HepMCFluxStreamer::TryNext(FluxSample &fs) {
     }
 }
 
+// --- Cached / importance-sampling decorator ----------------------------
+
+CachedFluxStreamer::CachedFluxStreamer(std::unique_ptr<FluxStreamer> inner, Options opts)
+    : FluxStreamer("", inner->Looping()), m_inner{std::move(inner)}, m_caching{opts.cache},
+      m_importance{opts.importance}, m_max_bytes{opts.max_bytes} {
+    m_count = m_inner->Count();
+    m_emin = m_inner->EMin();
+    m_emax = m_inner->EMax();
+    if(m_importance && !m_caching) {
+        NuGeom::Log().warn("FluxStreamer: importance sampling needs random access to the rays; "
+                           "enabling the in-memory cache for it.");
+        m_caching = true;
+    }
+    // The envelope only ever grows, so a run that starts on real weights locks
+    // in a max(w)-sized envelope; arming importance sampling later then buys
+    // nothing.  Preload so the very first thrown ray already carries the mean.
+    bool preload = opts.preload || m_importance;
+    // Report the payoff up front when the file recorded its weight summary.
+    if(m_inner->HasWeightSummary()) {
+        m_mean_weight = m_inner->MeanFluxWeight();
+        m_total_weight = m_inner->TotalFluxWeight();
+    }
+    if(m_caching && m_count > 0 && m_max_bytes > 0) {
+        const std::size_t need = m_count * sizeof(Cached);
+        if(need > m_max_bytes)
+            NuGeom::Log().warn("FluxStreamer: caching {} rays would need {:.1f} MB but the cap is "
+                               "{:.1f} MB; the cache will fill until the cap and then fall back to "
+                               "streaming.",
+                               m_count, static_cast<double>(need) / 1048576.0,
+                               static_cast<double>(m_max_bytes) / 1048576.0);
+        else
+            m_rays.reserve(m_count);
+    }
+    if(preload && m_caching) Preload();
+}
+
+void CachedFluxStreamer::Preload() {
+    NuGeom::Log().info("FluxStreamer: preloading rays into memory...");
+    FluxSample fs;
+    while(TryNext(fs)) {
+        if(!m_caching) { // hit the cap: nothing more to gain from preloading
+            NuGeom::Log().warn("FluxStreamer: preload aborted at the cache cap; importance "
+                               "sampling is unavailable and the run will stream.");
+            m_importance = false;
+            return;
+        }
+    }
+    // TryNext() returning false on the first pass already flipped m_filled and
+    // built the sampler; the cursor just needs resetting for the run proper.
+    m_pos = 0;
+}
+
+void CachedFluxStreamer::Emit(const Cached &c, FluxSample &fs, double weight_override) const {
+    fs.energy = c.energy;
+    fs.pdg = c.pdg;
+    fs.ray = NuGeom::Ray(NuGeom::Vector3D{c.ox, c.oy, c.oz}, NuGeom::Vector3D{c.dx, c.dy, c.dz},
+                         m_pot_per_ray);
+    fs.flux_weight = weight_override > 0.0 ? weight_override : c.weight;
+    fs.window_area = m_window_area;
+    fs.decorate = nullptr;
+}
+
+void CachedFluxStreamer::BuildSampler() {
+    m_cumulative.clear();
+    m_cumulative.reserve(m_rays.size());
+    double running = 0.0;
+    for(const auto &r : m_rays) {
+        running += r.weight > 0.0 ? r.weight : 0.0;
+        m_cumulative.push_back(running);
+    }
+    m_total_w = running;
+    m_mean_w = m_rays.empty() ? 0.0 : m_total_w / static_cast<double>(m_rays.size());
+    if(m_mean_weight > 0.0 && m_mean_w > 0.0) {
+        const double ratio = m_mean_w / m_mean_weight;
+        if(ratio < 0.99 || ratio > 1.01)
+            NuGeom::Log().warn("FluxStreamer: mean flux weight from the rays ({:.6e}) disagrees "
+                               "with the file's recorded NuGeom.Flux.MeanWeight ({:.6e}) by "
+                               "{:.2f}%. The metadata may be stale.",
+                               m_mean_w, m_mean_weight, 100.0 * (ratio - 1.0));
+    }
+    m_mean_weight = m_mean_w;
+    m_total_weight = m_total_w;
+    if(!(m_total_w > 0.0)) {
+        NuGeom::Log().warn("FluxStreamer: total flux weight is {}; importance sampling disabled.",
+                           m_total_w);
+        m_importance = false;
+        return;
+    }
+    NuGeom::Log().info("FluxStreamer: importance sampling armed over {} rays -- mean weight {:.6e} "
+                       "vs max {:.6e} (factor {:.0f} fewer rays for the same POT).",
+                       m_rays.size(), m_mean_w,
+                       m_rays.empty() ? 0.0
+                                      : std::max_element(m_rays.begin(), m_rays.end(),
+                                                         [](const Cached &a, const Cached &b) {
+                                                             return a.weight < b.weight;
+                                                         })
+                                            ->weight,
+                       m_mean_w > 0.0 ? (std::max_element(m_rays.begin(), m_rays.end(),
+                                                          [](const Cached &a, const Cached &b) {
+                                                              return a.weight < b.weight;
+                                                          })
+                                             ->weight /
+                                         m_mean_w)
+                                      : 0.0);
+}
+
+bool CachedFluxStreamer::TryNext(FluxSample &fs) {
+    // Serving from memory.
+    if(m_filled) {
+        if(m_rays.empty()) return false;
+        if(m_importance) {
+            // Draw i with probability w_i / sum(w); hand it the mean weight.
+            const double u = NuGeom::Random::Instance().Uniform(0.0, m_total_w);
+            auto it = std::upper_bound(m_cumulative.begin(), m_cumulative.end(), u);
+            std::size_t idx = static_cast<std::size_t>(it - m_cumulative.begin());
+            if(idx >= m_rays.size()) idx = m_rays.size() - 1;
+            Emit(m_rays[idx], fs, m_mean_w);
+            // No end-of-file in sampling mode; count pseudo-passes so the run
+            // report still means "exposures worth of rays drawn".
+            if(++m_draws % m_rays.size() == 0) ++m_loops;
+            return true;
+        }
+        if(m_pos >= m_rays.size()) return false;
+        Emit(m_rays[m_pos++], fs, 0.0);
+        return true;
+    }
+
+    // First pass: pull through the wrapped streamer, caching as we go.
+    if(!m_inner->TryNext(fs)) {
+        if(m_caching && !m_rays.empty()) {
+            m_filled = true;
+            m_pos = 0;
+            m_rays.shrink_to_fit();
+            NuGeom::Log().info("FluxStreamer: cached {} rays ({:.1f} MB); later passes are served "
+                               "from memory.",
+                               m_rays.size(), static_cast<double>(CacheBytes()) / 1048576.0);
+            if(m_importance) BuildSampler();
+        }
+        return false;
+    }
+    if(m_caching) {
+        // File-level constants, captured from the first ray.
+        m_window_area = fs.window_area;
+        m_pot_per_ray = fs.ray.POT();
+        if(m_max_bytes > 0 && (m_rays.size() + 1) * sizeof(Cached) > m_max_bytes) {
+            NuGeom::Log().warn("FluxStreamer: cache cap of {:.1f} MB reached after {} rays; "
+                               "falling back to streaming for the rest of the run.",
+                               static_cast<double>(m_max_bytes) / 1048576.0, m_rays.size());
+            m_caching = false;
+            m_importance = false;
+            m_rays.clear();
+            m_rays.shrink_to_fit();
+        } else {
+            const auto &o = fs.ray.Origin();
+            const auto &d = fs.ray.Direction();
+            m_rays.push_back(Cached{fs.energy, o.X(), o.Y(), o.Z(), d.X(), d.Y(), d.Z(),
+                                    fs.flux_weight, fs.pdg});
+        }
+    }
+    return true;
+}
+
+void CachedFluxStreamer::Rewind() {
+    if(m_filled) {
+        m_pos = 0;
+        return;
+    }
+    // Still on the first pass (or not caching): the inner streamer owns the
+    // position.  A rewind here means the first pass ended, so whatever was
+    // cached is the whole file.
+    if(m_caching && !m_rays.empty() && !m_filled) {
+        m_filled = true;
+        m_pos = 0;
+        if(m_importance) BuildSampler();
+    }
+    m_inner->Rewind();
+}
+
 // --- Factory -----------------------------------------------------------
 
 namespace {
@@ -385,6 +590,14 @@ std::unique_ptr<FluxStreamer> OpenFluxStreamer(const std::string &path, bool loo
     if(EndsWith(path, ".hepmc") || EndsWith(path, ".hepmc3"))
         return std::make_unique<HepMCFluxStreamer>(path, loop, offset_override);
     return std::make_unique<CSVFluxStreamer>(path, loop);
+}
+
+std::unique_ptr<FluxStreamer> OpenFluxStreamer(const std::string &path, bool loop,
+                                               const Vector3D *offset_override,
+                                               const CachedFluxStreamer::Options &opts) {
+    auto inner = OpenFluxStreamer(path, loop, offset_override);
+    if(!opts.cache && !opts.importance) return inner;
+    return std::make_unique<CachedFluxStreamer>(std::move(inner), opts);
 }
 
 } // namespace NuGeom

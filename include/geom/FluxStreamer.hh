@@ -7,6 +7,7 @@
 #include <limits>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace HepMC3 {
 class ReaderAscii;
@@ -47,10 +48,20 @@ class FluxStreamer {
     // Completed passes over the file (only grows when looping).
     std::size_t Loops() const { return m_loops; }
 
+    // Mean / total flux weight over the file, when known without reading it.
+    // NuHepMC files record these (NuGeom.Flux.MeanWeight / TotalWeight); they
+    // let importance sampling be armed -- and its payoff reported -- before a
+    // single ray has been parsed.  HasWeightSummary() is false otherwise.
+    bool HasWeightSummary() const { return m_mean_weight > 0.0; }
+    double MeanFluxWeight() const { return m_mean_weight; }
+    double TotalFluxWeight() const { return m_total_weight; }
+
   protected:
     FluxStreamer(std::string path, bool loop) : m_path{std::move(path)}, m_loop{loop} {}
     // Rewind to the first ray.
     virtual void Rewind() = 0;
+    // CachedFluxStreamer wraps another streamer and must be able to rewind it.
+    friend class CachedFluxStreamer;
 
     std::string m_path;
     bool m_loop;
@@ -58,6 +69,8 @@ class FluxStreamer {
     double m_emin = std::numeric_limits<double>::infinity();
     double m_emax = -std::numeric_limits<double>::infinity();
     std::size_t m_loops = 0;
+    double m_mean_weight = 0.0;
+    double m_total_weight = 0.0;
 };
 
 // Comma-separated flux file with a header row and one neutrino per line:
@@ -120,10 +133,103 @@ class HepMCFluxStreamer : public FluxStreamer {
     std::unique_ptr<HepMC3::ReaderAscii> m_reader;
 };
 
+// Decorator that keeps parsed rays in memory, and can draw them in proportion
+// to their flux weight.  Both behaviours are opt-in and independent of the
+// underlying format.
+//
+// CACHING (Options::cache).  The first pass pulls rays from the wrapped
+// streamer and stores a compact record for each; every later pass is served
+// from RAM.  Parsing a HepMC3 ASCII event costs ~24 us, which dominates the
+// run once layer-1 rejection is cheap, and a long run re-reads the file many
+// times (a 1e17-POT envelope run threw 55M rays against a 961k-ray file, ~57
+// passes).  `max_bytes` caps the footprint: a file that does not fit stops
+// being cached mid-pass and the streamer transparently degrades to pure
+// streaming for the rest of the run -- so enabling this can never make a large
+// file fail, only stop helping.
+//
+// IMPORTANCE SAMPLING (Options::importance).  Instead of walking the file in
+// order, draw ray i with probability w_i / sum(w) and hand it the MEAN weight
+// sum(w)/N in place of its own.  That is the textbook importance-sampling
+// reweighting and leaves the rate estimator unbiased:
+//
+//     E_p[(W/N) * A * C] = sum_i (w_i/W) (W/N) A C_i = (1/N) sum_i w_i A C_i
+//
+// which is exactly the uniform-draw expectation, while Ray::POT() stays
+// filePOT/N so a full N draws still reproduce the file exposure.  The payoff is
+// that the acceptance envelope's flux factor becomes mean(w) rather than
+// max(w) -- a factor ~459 on the DUNE ND flux -- so the same POT needs ~459x
+// fewer rays.  The cost is that rays are no longer visited in file order and
+// some are never drawn at all, so leave it off when every ray must be used.
+// It needs random access and therefore requires caching.
+class CachedFluxStreamer : public FluxStreamer {
+  public:
+    struct Options {
+        bool cache{true};         ///< keep parsed rays in memory
+        bool importance{false};   ///< draw rays proportional to flux weight
+        std::size_t max_bytes{0}; ///< cache cap; 0 = unlimited
+        /// Fill the cache at construction instead of on the first pass.
+        /// Importance sampling REQUIRES this: the acceptance envelope only ever
+        /// grows, so if the run begins on real weights it locks in a max(w)
+        /// -sized envelope and the later mean-weight rays are then accepted
+        /// ~max/mean times too rarely -- the speedup is lost entirely.
+        /// Defaults to on whenever `importance` is set.
+        bool preload{false};
+    };
+
+    CachedFluxStreamer(std::unique_ptr<FluxStreamer> inner, Options opts);
+    bool TryNext(FluxSample &fs) override;
+
+    bool Caching() const { return m_caching; }
+    bool Importance() const { return m_importance; }
+    std::size_t CachedRays() const { return m_rays.size(); }
+    /// Mean flux weight over the cached rays (the weight handed to every ray
+    /// once importance sampling is live).  0 before the first pass completes.
+    double MeanWeight() const { return m_mean_w; }
+    /// Bytes held by the cache.
+    std::size_t CacheBytes() const { return m_rays.size() * sizeof(Cached); }
+
+  protected:
+    void Rewind() override;
+
+  private:
+    /// Compact per-ray record.  window_area and POT-per-ray are file-level
+    /// constants, so they are not stored per ray.
+    struct Cached {
+        double energy, ox, oy, oz, dx, dy, dz, weight;
+        int pdg;
+    };
+
+    void Emit(const Cached &c, FluxSample &fs, double weight_override) const;
+    /// Build the cumulative weight table used to draw rays proportional to w.
+    void BuildSampler();
+    /// Drain the wrapped streamer into the cache up front.
+    void Preload();
+
+    std::unique_ptr<FluxStreamer> m_inner;
+    std::vector<Cached> m_rays;
+    std::vector<double> m_cumulative; ///< running sum of weights, for sampling
+    bool m_caching{true};             ///< still filling the cache (false once capped)
+    bool m_importance{false};
+    bool m_filled{false}; ///< first pass complete, cache authoritative
+    std::size_t m_max_bytes{0};
+    std::size_t m_pos{0};   ///< read cursor when serving sequentially
+    std::size_t m_draws{0}; ///< draws made in importance mode
+    double m_mean_w{0.0};
+    double m_total_w{0.0};
+    double m_window_area{1.0};
+    double m_pot_per_ray{1.0};
+};
+
 // Open a flux file by extension: NuHepMC for .hepmc/.hepmc3, CSV otherwise.
 // For NuHepMC files `offset_override` (if non-null, cm) replaces the recorded
 // beam->detector translation.
 std::unique_ptr<FluxStreamer> OpenFluxStreamer(const std::string &path, bool loop,
                                                const Vector3D *offset_override = nullptr);
+
+// As above, wrapped in a CachedFluxStreamer when `opts` asks for caching or
+// importance sampling; the bare streamer otherwise.
+std::unique_ptr<FluxStreamer> OpenFluxStreamer(const std::string &path, bool loop,
+                                               const Vector3D *offset_override,
+                                               const CachedFluxStreamer::Options &opts);
 
 } // namespace NuGeom

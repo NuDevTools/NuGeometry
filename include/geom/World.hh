@@ -4,6 +4,9 @@
 #include "geom/Shape.hh"
 #include "geom/Volume.hh"
 #include <memory>
+#include <set>
+#include <string>
+#include <utility>
 #include <vector>
 
 namespace NuGeom {
@@ -36,6 +39,13 @@ class World {
     /// and ray-for-ray equivalent to the sequential traversal (cross-validated
     /// against it and ROOT's TGeoNavigator).
     std::vector<LineSegment> GetLineSegmentsSweep(const Ray &) const;
+
+    /// Path length per material along the ray, without materializing
+    /// LineSegments.  Layer-1 acceptance needs only sum(n_i sigma_i L_i), so
+    /// this shares the sweep with GetLineSegmentsSweep but skips segment
+    /// construction and the adjacent-segment merge.  Materials are owned by the
+    /// volume tree; the pointers must not outlive this World.
+    std::vector<std::pair<const Material *, double>> GetColumnLengths(const Ray &) const;
 
     /// A region where the experimental sweep disagrees with the hierarchical
     /// point-in-volume containment (FindMaterial) — a likely overlapping /
@@ -85,6 +95,55 @@ class World {
 
     /// Voxelize the world geometry.  The longest axis gets @p resolution cells.
     VoxelGrid Voxelize(int resolution) const;
+
+    /// Criteria for dropping placed volumes from the traversal tree.
+    ///
+    /// Pruning is a *speed* knob, not a physics-neutral one: a dropped volume's
+    /// space reverts to its mother's material, so the mother's column density
+    /// grows by the dropped shape's volume.  `PruneReport::mass_delta` is that
+    /// net change, and it is the number to check before trusting a pruned run.
+    struct PruneOptions {
+        /// Drop any placed volume whose subtree mass is below this fraction of
+        /// the unpruned world mass.  0 disables the mass criterion.
+        double min_mass_fraction{0.0};
+        /// Drop any placed volume whose material name is in this set, whatever
+        /// its mass (e.g. materials the generator has no target for).  The whole
+        /// subtree goes with it.
+        std::set<std::string> drop_materials{};
+        /// Never drop a volume matching these names (checked before the criteria
+        /// above), so a light-but-essential volume can be protected.
+        std::set<std::string> keep_volumes{};
+    };
+
+    struct PruneReport {
+        struct Entry {
+            std::string volume;      ///< placed volume name
+            std::string material;    ///< its material
+            std::string replaced_by; ///< mother material now filling the space
+            double mass{0};          ///< subtree mass removed [g]
+            double fraction{0};      ///< mass / total_mass
+            double mass_delta{0};    ///< net geometry mass change from this drop [g]
+            size_t nodes{0};         ///< placed volumes removed (this + descendants)
+            std::string reason;      ///< "material", "mass fraction"
+        };
+        size_t removed_subtrees{0};
+        size_t removed_nodes{0}; ///< total placed volumes removed
+        double total_mass{0};    ///< world mass before pruning [g]
+        double removed_mass{0};  ///< sum of dropped subtree masses [g]
+        double mass_delta{0};    ///< net change in geometry mass [g]
+        std::vector<Entry> entries;
+        double RemovedMassFraction() const {
+            return total_mass > 0 ? removed_mass / total_mass : 0.0;
+        }
+        /// Net mass change as a fraction of the original world mass -- the
+        /// figure of merit for how much the pruning perturbed the physics.
+        double MassDeltaFraction() const { return total_mass > 0 ? mass_delta / total_mass : 0.0; }
+    };
+
+    /// Drop placed volumes matching @p opts from the traversal tree, in place.
+    /// Returns what was removed.  Call before any ray tracing; cached BVHs of
+    /// modified nodes are invalidated automatically.
+    PruneReport Prune(const PruneOptions &opts);
 
   private:
     std::pair<double, size_t> GetSDF(const Vector3D &) const;

@@ -28,6 +28,21 @@
 //                                    #   never scanned to derive it
 //     FluxEnergyRange: [lo, hi]      # optional: flux energy support in GeV, for
 //                                    #   flux files that do not record it
+//       Cache: true                  #   keep parsed rays in RAM (DEFAULT: ~10x on
+//                                    #   long runs).  Falls back to streaming past
+//                                    #   MaxCacheMB, so it is always safe; set
+//                                    #   false for a very large file, many files,
+//                                    #   or a tight memory budget
+//       MaxCacheMB: 2048             #   cache cap in MB (default 2048)
+//       ImportanceSampling: true     #   draw rays proportional to flux weight and
+//                                    #   hand each the MEAN weight -- unbiased, and
+//                                    #   ~459x fewer rays for the same POT on the
+//                                    #   DUNE ND flux.  Implies Cache.  Leave off
+//                                    #   if every ray in the file must be used.
+//     Prune:                         # optional: drop volumes to speed up traversal
+//       MinMassFraction: 1.0e-4      #   drop subtrees below this fraction of world mass
+//       DropMaterials: [LAr]         #   drop these materials outright (whole subtree)
+//       KeepVolumes: [volTPCActive]  #   never drop these, whatever the criteria
 //     InitRays: 500                  # optional: self-generated probe rays used to
 //                                    #   calibrate the layer-1 envelope (NOT flux rays)
 //     BurnInRays: 1000               # optional: flux rays consumed (untraced) to fix
@@ -81,6 +96,7 @@
 #include <iostream>
 #include <memory>
 #include <optional>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -114,6 +130,16 @@ spdlog::level::level_enum ParseVerbosity(const std::string &arg) {
 // Everything the driver needs for one run, from either input style.
 struct DriverConfig {
     std::string geometry;
+    // Volume pruning (speed): drop placed volumes below a mass fraction of the
+    // world, and/or of named materials.  Off by default -- pruning is not
+    // physics-neutral (a dropped volume's space becomes mother material).
+    // Flux caching / importance sampling (both optional; see CachedFluxStreamer).
+    bool cache_rays{true};
+    bool importance_rays{false};
+    std::size_t cache_max_mb{2048};
+    double prune_min_mass_fraction{0.0};
+    std::set<std::string> prune_drop_materials;
+    std::set<std::string> prune_keep_volumes;
     std::string rays_file;
     bool loop_rays = false;
     bool have_offset = false;
@@ -194,6 +220,19 @@ DriverConfig FromRunCard(const std::string &path) {
         cfg.flux_emin = v[0];
         cfg.flux_emax = v[1];
         cfg.have_flux_energy_range = true;
+    }
+    if(driver["Rays"]) {
+        const auto &rays = driver["Rays"];
+        if(rays["Cache"]) cfg.cache_rays = rays["Cache"].as<bool>();
+        if(rays["ImportanceSampling"]) cfg.importance_rays = rays["ImportanceSampling"].as<bool>();
+        if(rays["MaxCacheMB"]) cfg.cache_max_mb = rays["MaxCacheMB"].as<std::size_t>();
+    }
+    if(driver["Prune"]) {
+        const auto &pr = driver["Prune"];
+        if(pr["MinMassFraction"]) cfg.prune_min_mass_fraction = pr["MinMassFraction"].as<double>();
+        for(const auto &m : pr["DropMaterials"])
+            cfg.prune_drop_materials.insert(m.as<std::string>());
+        for(const auto &v : pr["KeepVolumes"]) cfg.prune_keep_volumes.insert(v.as<std::string>());
     }
     if(driver["InitRays"]) cfg.init_rays = driver["InitRays"].as<std::size_t>();
     if(driver["BurnInRays"]) cfg.burn_in_rays = driver["BurnInRays"].as<std::size_t>();
@@ -312,8 +351,12 @@ int main(int argc, char **argv) {
         // Stream rays on demand.  Opening a NuHepMC flux reads one event for
         // the run-level metadata and (only if the converter did not record the
         // ray count) makes one raw byte-count pass -- it never parses the rays.
+        NuGeom::CachedFluxStreamer::Options fopts;
+        fopts.cache = cfg.cache_rays;
+        fopts.importance = cfg.importance_rays;
+        fopts.max_bytes = cfg.cache_max_mb * 1024u * 1024u;
         auto streamer = NuGeom::OpenFluxStreamer(cfg.rays_file, cfg.loop_rays,
-                                                 cfg.have_offset ? &cfg.offset : nullptr);
+                                                 cfg.have_offset ? &cfg.offset : nullptr, fopts);
         std::cout << "Streaming " << streamer->Count() << " rays per pass from " << cfg.rays_file
                   << " (";
         if(streamer->HasEnergyRange())
@@ -359,6 +402,20 @@ int main(int argc, char **argv) {
 
         NuGeom::DetectorSim sim(cfg.safety);
         sim.Setup(cfg.geometry);
+
+        // Prune before anything touches the volume tree: the envelope
+        // calibration below traces the geometry, so it must see the pruned one.
+        if(cfg.prune_min_mass_fraction > 0.0 || !cfg.prune_drop_materials.empty()) {
+            NuGeom::World::PruneOptions popts;
+            popts.min_mass_fraction = cfg.prune_min_mass_fraction;
+            popts.drop_materials = cfg.prune_drop_materials;
+            popts.keep_volumes = cfg.prune_keep_volumes;
+            const auto prep = sim.Prune(popts);
+            std::cout << "Pruned " << prep.removed_nodes << " placed volumes ("
+                      << prep.removed_subtrees << " subtrees), "
+                      << 100.0 * prep.RemovedMassFraction() << "% of the world mass; net mass "
+                      << "change " << 100.0 * prep.MassDeltaFraction() << "%\n";
+        }
         sim.SetSamplingMode(sampling);
         sim.SetGenerator(adapter);
         sim.SetFluxCallback([&streamer]() { return streamer->Next(); });

@@ -4,6 +4,7 @@
 #include "geom/Material.hh"
 #include "geom/Parser.hh"
 #include "geom/Random.hh"
+#include <cstdlib>
 
 // HepMC3 and NuHepMC headers trip our strict warnings; silence them here.
 #pragma GCC diagnostic push
@@ -49,7 +50,16 @@ int NucleusPDG(const NuGeom::Element &elm) {
 
 } // namespace
 
-DetectorSim::DetectorSim(double safety_factor) : m_safety_factor{safety_factor} {}
+DetectorSim::DetectorSim(double safety_factor) : m_safety_factor{safety_factor} {
+    // Two-stage layer-1 rejection is exact and on by default; NUGEOM_TWO_STAGE=0
+    // forces the single-stage path for cross-checking (same pattern as
+    // NUGEOM_TRAVERSAL=sequential).  Read once.
+    static const bool disabled = [] {
+        const char *e = std::getenv("NUGEOM_TWO_STAGE");
+        return e && std::string(e) == "0";
+    }();
+    if(disabled) m_two_stage = false;
+}
 DetectorSim::~DetectorSim() = default;
 
 void DetectorSim::SetEventFile(const std::string &outfile) {
@@ -175,6 +185,7 @@ void DetectorSim::Init(size_t nrays) {
     double best = 0;
     double best_e = 0;
     int best_pdg = 0;
+    m_max_col_elem.clear();
     for(size_t i = 0; i < rays.size(); ++i) {
         if(i % 100 == 0)
             NuGeom::Log().info("Probe ray {} / {}. Max interaction probability = {}", i,
@@ -184,6 +195,14 @@ void DetectorSim::Init(size_t nrays) {
         // (grid points x elements) cross-section lookups rather than
         // (grid points x segments x elements).
         const auto cols = ColumnDensity(world.GetLineSegments(rays[i]));
+        // Per-element running maximum: the ingredients of GeomBound().
+        for(const auto &[elm, n_col] : cols) {
+            auto it = m_max_col_elem.find(elm);
+            if(it == m_max_col_elem.end())
+                m_max_col_elem.emplace(elm, n_col);
+            else if(n_col > it->second)
+                it->second = n_col;
+        }
         for(const double energy : energies) {
             for(const int pdg : m_species) {
                 double prob = 0;
@@ -218,6 +237,38 @@ void DetectorSim::Init(size_t nrays) {
     m_flux_scale = 0.0;
     max_prob = 0.0;
     m_adaptive_envelope = true;
+
+    // ---- GeomBound table -------------------------------------------------
+    // sum_e max(n_col_e) * sigma_e(E, pdg): the largest column density of each
+    // element combined into one synthetic ray.  No real ray can beat it, and
+    // unlike `best` it resolves energy and species instead of collapsing to the
+    // worst case over both.  Tabulated per coarse energy bin, each bin holding
+    // the max over a finer sub-grid so a lookup stays an upper bound.
+    constexpr size_t kSub = 4;
+    m_bound_energies = energies;
+    m_bound_table.assign(m_species.size(), std::vector<double>(energies.size(), 0.0));
+    m_bound_global = 0.0;
+    for(size_t si = 0; si < m_species.size(); ++si) {
+        const int pdg = m_species[si];
+        for(size_t i = 0; i + 1 < energies.size(); ++i) {
+            double bin_max = 0.0;
+            for(size_t k = 0; k <= kSub; ++k) {
+                const double f = static_cast<double>(k) / kSub;
+                const double e = energies[i] * std::pow(energies[i + 1] / energies[i], f);
+                double p = 0.0;
+                for(const auto &[elm, n_col] : m_max_col_elem)
+                    p += n_col * ElementXSec(e, pdg, elm);
+                bin_max = std::max(bin_max, p);
+            }
+            m_bound_table[si][i] = bin_max;
+            m_bound_global = std::max(m_bound_global, bin_max);
+        }
+        m_bound_table[si].back() = m_bound_table[si][energies.size() - 2];
+    }
+    NuGeom::Log().info("GeomBound: summed per-element column maxima over {} elements give a "
+                       "worst-case bound of {} (vs {} for the largest single probe ray) -- "
+                       "energy-resolved, so most rays are held to a much tighter bound.",
+                       m_max_col_elem.size(), m_bound_global, best);
 
     NuGeom::Log().info("Envelope calibrated on {} probe rays x {} energies x {} species: max "
                        "interaction probability {} (at E = {} GeV, pdg = {}); geometry envelope "
@@ -282,9 +333,6 @@ void DetectorSim::InitFromFlux(size_t nrays) {
 bool DetectorSim::ProduceEvent() {
     FluxSample fs = flux_callback();
 
-    auto [probs, segments] = HandleRay(fs);
-    double total_prob = std::accumulate(probs.begin(), probs.end(), 0.0);
-
     // Layer-1 acceptance weight = flux importance weight * flux-window area *
     // interaction probability.  This mirrors GENIE GNuMIFlux's unweighted/retry
     // path:
@@ -301,7 +349,6 @@ bool DetectorSim::ProduceEvent() {
     //     GENIE's fMaxWeight (here it also folds the interaction prob, since
     //     DetectorSim couples flux and interaction in one rejection step).
     const double flux_scale = fs.flux_weight * fs.window_area;
-    const double accept_w = flux_scale * total_prob;
     ++m_stats.thrown;
 
     // The envelope in force for THIS throw.  It is deliberately a function of
@@ -329,9 +376,75 @@ bool DetectorSim::ProduceEvent() {
     }
     const double envelope = max_prob;
 
-    // Fold this ray into the envelope for SUBSEQUENT throws.
+    // The flux half of the envelope needs no traversal, so it is updated from
+    // EVERY ray -- including the ones stage 1 rejects below.  That keeps the
+    // `ceiling` bound valid for the whole flux, which is what makes the stage-1
+    // pre-rejection safe.
+    if(m_geom_envelope > 0.0 && flux_scale > m_flux_scale) m_flux_scale = flux_scale;
+
+    // Burn-in rays seed the envelope (both halves) and are never accepted, so
+    // they always traverse -- there are only m_envelope_burn_in of them.
+    const bool in_burn_in = (m_geom_envelope > 0.0 && m_stats.thrown <= m_envelope_burn_in);
+
+    // --- Stage 1: reject on the flux weight alone, before any traversal ------
+    //
+    // accept_w = flux_scale * total_prob and total_prob <= m_geom_envelope (the
+    // probe-ray calibration), so the acceptance probability
+    //     p = accept_w / envelope
+    // is bounded by
+    //     q = flux_scale * m_geom_envelope / envelope,
+    // which depends only on this ray's flux weight.  Throwing against q here
+    // and against p/q = total_prob/m_geom_envelope after the traversal gives
+    // exactly p, so this is an exact restructuring, not an approximation.
+    //
+    // A ray that fails stage 1 has accept_w <= flux_scale*m_geom_envelope
+    // < envelope, so it could never have been accepted AND could never have
+    // clipped -- only its (traversal-free) POT charge and flux scale matter.
+    const bool two_stage = m_two_stage && !in_burn_in && m_geom_envelope > 0.0 && envelope > 0.0 &&
+                           std::isfinite(envelope);
+    double q = 1.0;
+    double bound = 0.0;
+    if(two_stage) {
+        // Energy- and species-resolved bound on total_prob (see GeomBound):
+        // tighter than the flat m_geom_envelope, so stage 1 rejects more rays
+        // before paying for a traversal.
+        bound = GeomBound(fs.energy, fs.pdg);
+        if(!(bound > 0.0) || !std::isfinite(bound)) bound = m_geom_envelope;
+        q = flux_scale * bound / envelope;
+        if(q < 1.0) {
+            if(NuGeom::Random::Instance().Uniform(0.0, 1.0) > q) {
+                m_pot += fs.ray.POT() / envelope;
+                m_stats.pot = m_pot;
+                m_stats.max_prob = envelope;
+                ++m_stats.stage1_rejected;
+                return false;
+            }
+        } else {
+            q = 1.0; // stage 1 cannot help this ray; stage 2 carries the full p
+        }
+    }
+
+    // --- Geometry traversal (the expensive part) -----------------------------
+    // Layer 1 needs only the total interaction probability, so take the
+    // column-density-only traversal here.  The full LineSegment list is built
+    // below, once, and only for rays that survive the acceptance throw.
+    const double total_prob = ColumnProb(fs.energy, fs.pdg, fs.ray);
+    const double accept_w = flux_scale * total_prob;
+    ++m_stats.traversed;
+
+    // Adaptive half of the bound: if a real ray beats the tabulated maximum,
+    // raise the inflation so subsequent rays are held to a bound that would
+    // have covered it.  Past-only, monotone, and it converges -- the summed
+    // per-element maxima make this rare by construction.
+    if(two_stage && bound > 0.0 && total_prob > bound) {
+        m_bound_inflation *= total_prob / bound;
+        ++m_bound_raises;
+        NuGeom::Log().debug("GeomBound exceeded ({} > {}); inflation now {}", total_prob, bound,
+                            m_bound_inflation);
+    }
+
+    // Fold this ray into the joint envelope for SUBSEQUENT throws.
     if(m_geom_envelope > 0.0) {
-        if(flux_scale > m_flux_scale) m_flux_scale = flux_scale;
         if(accept_w > m_joint_max) {
             NuGeom::Log().debug("ProduceEvent: raising the running envelope {} -> {}", m_joint_max,
                                 accept_w);
@@ -350,7 +463,7 @@ bool DetectorSim::ProduceEvent() {
     // against a barely-seeded envelope charges POT/envelope, an enormous
     // exposure, while producing at most one event, which would dilute
     // events/POT by several percent for the whole run.
-    if(m_geom_envelope > 0.0 && m_stats.thrown <= m_envelope_burn_in) return false;
+    if(in_burn_in) return false;
 
     // Bootstrap: with no envelope yet there is nothing to throw against.
     if(!(envelope > 0.0) || !std::isfinite(envelope)) {
@@ -366,12 +479,18 @@ bool DetectorSim::ProduceEvent() {
     // by Init() this can only happen on a new record flux weight — rare, and
     // bounded — but it is accounted for here so the bias is measurable rather
     // than silent.
-    if(accept_w > envelope) {
+    // The probability actually thrown against.  Without two-stage this is
+    // accept_w/envelope as before; with it, stage 1 has already consumed a
+    // factor q, so stage 2 must carry p/q = total_prob/m_geom_envelope.
+    const double p_full = accept_w / envelope;
+    const double p_stage2 = q < 1.0 ? p_full / q : p_full;
+
+    if(p_stage2 > 1.0) {
         ++m_stats.clipped;
-        m_stats.clipped_excess += accept_w / envelope - 1.0;
-        NuGeom::Log().debug("ProduceEvent: acceptance weight {} exceeds the envelope {} "
-                            "(clip #{}); envelope raised for subsequent rays",
-                            accept_w, envelope, m_stats.clipped);
+        m_stats.clipped_excess += p_stage2 - 1.0;
+        NuGeom::Log().debug("ProduceEvent: acceptance probability {} exceeds 1 (clip #{}); "
+                            "accept_w = {}, envelope = {}, q = {}",
+                            p_stage2, m_stats.clipped, accept_w, envelope, q);
     }
 
     // POT charged per thrown ray, flat and independent of accept/reject — the
@@ -385,15 +504,20 @@ bool DetectorSim::ProduceEvent() {
     m_stats.pot = m_pot;
     m_stats.max_prob = envelope;
 
-    NuGeom::Log().trace("ProduceEvent: E = {} GeV, pdg = {}, {} segments, P = {} w = {} "
+    NuGeom::Log().trace("ProduceEvent: E = {} GeV, pdg = {}, P = {} w = {} "
                         "/ envelope = {} (accept prob {})",
-                        fs.energy, fs.pdg, segments.size(), total_prob, fs.flux_weight, envelope,
+                        fs.energy, fs.pdg, total_prob, fs.flux_weight, envelope,
                         accept_w / envelope);
 
-    if(accept_w / envelope < NuGeom::Random::Instance().Uniform(0.0, 1.0)) return false;
+    if(p_stage2 < NuGeom::Random::Instance().Uniform(0.0, 1.0)) return false;
     ++m_stats.accepted;
 
-    double r = NuGeom::Random::Instance().Uniform(0.0, total_prob);
+    // Accepted: now pay for the full segment list, which PickVertex needs to
+    // place the vertex.  Draw against this traversal's own total so a last-bit
+    // difference in summation order cannot walk off the end of `probs`.
+    auto [probs, segments] = HandleRay(fs);
+    const double seg_total = std::accumulate(probs.begin(), probs.end(), 0.0);
+    double r = NuGeom::Random::Instance().Uniform(0.0, seg_total);
     VertexPick vp = PickVertex(segments, probs, r);
 
     Element target = PickElement(vp.material, fs.energy, fs.pdg);
@@ -489,6 +613,18 @@ void DetectorSim::ReportRunSummary() const {
     log.info("  sum(weights)/POT = {:.6e}", weighted_rate);
     log.info("  <weight>         = {:.6f}", mean_w);
     log.info("  envelope         = {:.6e} ({} growths)", max_prob, m_stats.envelope_growths);
+    if(m_stats.stage1_rejected > 0) {
+        const double frac =
+            static_cast<double>(m_stats.traversed) / static_cast<double>(m_stats.thrown);
+        log.info("  traversals       = {} of {} rays ({:.4f}%, 1 in {:.0f}) -- two-stage "
+                 "rejection skipped the geometry for {} rays",
+                 m_stats.traversed, m_stats.thrown, 100.0 * frac, frac > 0 ? 1.0 / frac : 0.0,
+                 m_stats.stage1_rejected);
+        if(m_bound_raises > 0)
+            log.info("  GeomBound        = raised {} times, inflation {:.4f} (a real ray beat the "
+                     "summed per-element column maxima)",
+                     m_bound_raises, m_bound_inflation);
+    }
 
     // Clipped rays are the one envelope-induced bias, and it is always a
     // shortfall: `clipped_excess` is the number of extra layer-1 accepts they
@@ -672,6 +808,35 @@ NuGeom::HandledRay DetectorSim::HandleRay(double energy, int nu_pdg, const NuGeo
         probs.push_back(segment.Length() / meanfreepath);
     }
     return {std::move(probs), std::move(segments)};
+}
+
+double DetectorSim::GeomBound(double energy, int nu_pdg) const {
+    if(m_bound_table.empty() || m_bound_energies.size() < 2)
+        return m_geom_envelope * m_bound_inflation;
+    // Outside the calibrated range the table says nothing: fall back to the
+    // global maximum rather than extrapolating into an under-estimate.
+    if(energy < m_bound_energies.front() || energy > m_bound_energies.back())
+        return m_bound_global * m_safety_factor * m_bound_inflation;
+    size_t si = 0;
+    for(size_t i = 0; i < m_species.size(); ++i)
+        if(m_species[i] == nu_pdg) {
+            si = i;
+            break;
+        }
+    // Log-spaced grid: the bin index is a closed form.
+    const double lo = m_bound_energies.front(), hi = m_bound_energies.back();
+    const size_t nbin = m_bound_energies.size() - 1;
+    const double f = std::log(energy / lo) / std::log(hi / lo);
+    size_t i = static_cast<size_t>(f * static_cast<double>(nbin));
+    if(i >= nbin) i = nbin - 1;
+    return m_bound_table[si][i] * m_safety_factor * m_bound_inflation;
+}
+
+double DetectorSim::ColumnProb(double energy, int nu_pdg, const NuGeom::Ray &ray) const {
+    double total = 0.0;
+    for(const auto &[mat, len] : world.GetColumnLengths(ray))
+        total += len / CalculateMeanFreePath(energy, nu_pdg, *mat);
+    return total;
 }
 
 double DetectorSim::ElementXSec(double energy, int nu_pdg, const NuGeom::Element &elm) const {

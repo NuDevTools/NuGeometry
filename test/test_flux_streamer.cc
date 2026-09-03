@@ -1,4 +1,8 @@
 #include "catch2/catch.hpp"
+#include "geom/Random.hh"
+#include <cmath>
+#include <map>
+#include <vector>
 
 #include "geom/FluxStreamer.hh"
 
@@ -206,4 +210,125 @@ TEST_CASE("HepMCFluxStreamer counts rays without the recorded count", "[FluxStre
     CHECK(a.Count() == b.Count());
     CHECK(b.Count() == 7);
     CHECK(a.Next().ray.POT() == Approx(b.Next().ray.POT()));
+}
+
+// ---------------------------------------------------------------------------
+// CachedFluxStreamer: caching must be transparent, and importance sampling must
+// leave sum(w) per exposure unchanged while collapsing the weight spread.
+// ---------------------------------------------------------------------------
+namespace {
+
+/// Toy streamer over a fixed weight list; one pass then end-of-file.
+class ToyStreamer : public NuGeom::FluxStreamer {
+  public:
+    explicit ToyStreamer(std::vector<double> w)
+        : NuGeom::FluxStreamer("toy", true), m_w{std::move(w)} {
+        m_count = m_w.size();
+    }
+    bool TryNext(NuGeom::FluxSample &fs) override {
+        if(m_pos >= m_w.size()) return false;
+        fs.energy = 1.0 + 0.1 * static_cast<double>(m_pos);
+        fs.pdg = 14;
+        fs.ray = NuGeom::Ray({0, 0, static_cast<double>(m_pos)}, {0, 0, 1}, 2.0);
+        fs.flux_weight = m_w[m_pos];
+        fs.window_area = 7.0;
+        ++m_pos;
+        ++m_reads;
+        return true;
+    }
+    std::size_t Reads() const { return m_reads; }
+
+  protected:
+    void Rewind() override { m_pos = 0; }
+
+  private:
+    std::vector<double> m_w;
+    std::size_t m_pos = 0, m_reads = 0;
+};
+
+} // namespace
+
+TEST_CASE("CachedFluxStreamer replays from memory without re-reading", "[FluxStreamer][Cache]") {
+    const std::vector<double> w = {1.0, 2.0, 3.0, 4.0};
+    auto inner = std::make_unique<ToyStreamer>(w);
+    auto *raw = inner.get();
+    NuGeom::CachedFluxStreamer::Options opts;
+    opts.cache = true;
+    NuGeom::CachedFluxStreamer s(std::move(inner), opts);
+
+    std::vector<double> pass1, pass2;
+    for(std::size_t i = 0; i < w.size(); ++i) pass1.push_back(s.Next().flux_weight);
+    CHECK(raw->Reads() == w.size());
+    for(std::size_t i = 0; i < w.size(); ++i) pass2.push_back(s.Next().flux_weight);
+
+    // Second pass is identical and cost the inner streamer nothing more.
+    CHECK(pass1 == pass2);
+    CHECK(raw->Reads() == w.size());
+    CHECK(s.CachedRays() == w.size());
+    // File-level constants survive the round trip.
+    auto fs = s.Next();
+    CHECK(fs.window_area == Approx(7.0));
+    CHECK(fs.ray.POT() == Approx(2.0));
+}
+
+TEST_CASE("CachedFluxStreamer falls back to streaming past the cache cap",
+          "[FluxStreamer][Cache]") {
+    NuGeom::CachedFluxStreamer::Options opts;
+    opts.cache = true;
+    opts.max_bytes = 8; // smaller than one record
+    NuGeom::CachedFluxStreamer s(std::make_unique<ToyStreamer>(std::vector<double>{1.0, 2.0, 3.0}),
+                                 opts);
+    // Still yields every ray, just without caching.
+    std::vector<double> got;
+    for(int i = 0; i < 6; ++i) got.push_back(s.Next().flux_weight);
+    CHECK(got == std::vector<double>{1.0, 2.0, 3.0, 1.0, 2.0, 3.0});
+    CHECK(!s.Caching());
+    CHECK(s.CachedRays() == 0);
+}
+
+TEST_CASE("Importance sampling is unbiased and flattens the weight spread",
+          "[FluxStreamer][Importance]") {
+    // Heavy tail: one ray carries most of the flux.
+    const std::vector<double> w = {0.001, 0.01, 0.1, 1.0, 10.0};
+    const double total = 11.111;
+    const double mean = total / static_cast<double>(w.size());
+
+    NuGeom::Random::Instance().Seed(20260902);
+    NuGeom::CachedFluxStreamer::Options opts;
+    opts.cache = true;
+    opts.importance = true;
+    NuGeom::CachedFluxStreamer s(std::make_unique<ToyStreamer>(w), opts);
+
+    // Drain the first (uncached) pass.  The switch to memory happens on the
+    // call AFTER the inner streamer reports end-of-file, so take one extra.
+    for(std::size_t i = 0; i < w.size() + 1; ++i) s.Next();
+    REQUIRE(s.Importance());
+    REQUIRE(s.CachedRays() == w.size());
+    CHECK(s.MeanWeight() == Approx(mean).epsilon(1e-9));
+
+    // Every drawn ray carries the mean weight, so sum(w) over N draws
+    // reproduces the file's total weight -- the exposure is unchanged.
+    constexpr std::size_t kDraws = 200000;
+    double sum_w = 0.0;
+    std::map<int, std::size_t> hits;
+    for(std::size_t i = 0; i < kDraws; ++i) {
+        auto fs = s.Next();
+        sum_w += fs.flux_weight;
+        hits[static_cast<int>(fs.ray.Origin().Z())]++;
+    }
+    CHECK(sum_w / static_cast<double>(kDraws) == Approx(mean).epsilon(1e-9));
+
+    // Draw frequency must track the weights: ray 4 (w=10) should dominate.
+    // The light rays are drawn only a handful of times, so compare counts
+    // inside a 5-sigma Poisson band rather than with a flat fractional
+    // tolerance, which would be meaningless at an expectation of ~18.
+    for(std::size_t i = 0; i < w.size(); ++i) {
+        const double expect = static_cast<double>(kDraws) * w[i] / total;
+        const double obs = static_cast<double>(hits[static_cast<int>(i)]);
+        INFO("ray " << i << ": observed " << obs << ", expected " << expect);
+        CHECK(std::abs(obs - expect) < 5.0 * std::sqrt(expect) + 5.0);
+    }
+    // The heaviest ray must carry the bulk of the draws.
+    CHECK(static_cast<double>(hits[4]) / static_cast<double>(kDraws) ==
+          Approx(w[4] / total).epsilon(0.02));
 }

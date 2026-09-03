@@ -186,9 +186,10 @@ def survey_rays(files, loc, flavor, max_events, step):
 
     HepMC3 ASCII stores the run info ahead of the first event, so these have to
     be known before the writing loop starts. NuGeometry reads them back as
-    NuGeom.Flux.NRays / NuGeom.Flux.EnergyRange_GeV, which is what lets its
-    flux streamer normalize POT per ray and check the generator's energy
-    coverage without ever scanning the converted file. Skipping this survey
+    NuGeom.Flux.NRays / NuGeom.Flux.EnergyRange_GeV / NuGeom.Flux.TotalWeight,
+    which is what lets its flux streamer normalize POT per ray, check the
+    generator's energy coverage, and size the importance-sampling payoff
+    without ever scanning the converted file. Skipping this survey
     only costs NuGeometry a cheap byte-count pass at open time, so the filters
     below must mirror the writing loop's exactly or the POT normalization
     silently drifts.
@@ -198,6 +199,11 @@ def survey_rays(files, loc, flavor, max_events, step):
                 "dk2nu/nuray/nuray.E", "dk2nu/nuray/nuray.wgt"]
     n = 0
     emin, emax = np.inf, -np.inf
+    # Sum of the per-cm^2 flux weights. NuGeometry needs mean(w) BEFORE it
+    # throws its first ray: its acceptance envelope only ever grows, so a run
+    # that starts on raw weights locks in a max(w)-sized envelope and can never
+    # benefit from importance sampling afterwards.
+    total_w = 0.0
     for chunk in uproot.iterate(sources, branches, step_size=step, library="np"):
         ntype = chunk["dk2nu/decay/decay.ntype"]
         nimpwt = chunk["dk2nu/decay/decay.nimpwt"]
@@ -220,17 +226,19 @@ def survey_rays(files, loc, flavor, max_events, step):
             if keep.any():
                 emin = min(emin, float(E[keep].min()))
                 emax = max(emax, float(E[keep].max()))
+                total_w += float(w[keep].sum())
             break
 
         n += int(keep.sum())
         if keep.any():
             emin = min(emin, float(E[keep].min()))
             emax = max(emax, float(E[keep].max()))
-    return n, emin, emax
+            total_w += float(w[keep].sum())
+    return n, emin, emax, total_w
 
 
 def make_run_info(files, pot, location, offset, window, nrays=0,
-                  energy_range=None):
+                  energy_range=None, total_weight=0.0):
     width, height = window
     area = width * height if (width > 0.0 and height > 0.0) else 1.0
     ri = GenRunInfo()
@@ -265,6 +273,15 @@ def make_run_info(files, pot, location, offset, window, nrays=0,
     if energy_range is not None:
         emin, emax = energy_range
         ri.attributes["NuGeom.Flux.EnergyRange_GeV"] = f"{float(emin)!r},{float(emax)!r}"
+    # Flux-weight summary. NuGeometry uses mean(w) to arm importance sampling
+    # from the very first ray (see CachedFluxStreamer): drawing rays with
+    # probability w_i/sum(w) and handing each the mean weight is unbiased, and
+    # shrinks the acceptance envelope by max(w)/mean(w) -- ~459x on the DUNE ND
+    # flux -- so the same POT needs that many fewer rays.
+    if total_weight > 0.0:
+        ri.attributes["NuGeom.Flux.TotalWeight"] = repr(float(total_weight))
+        if nrays:
+            ri.attributes["NuGeom.Flux.MeanWeight"] = repr(float(total_weight) / int(nrays))
     return ri
 
 
@@ -297,13 +314,16 @@ def main():
         print("No beam->detector offset given; recording identity. NuGeometry "
               "applies the transform at load.")
 
-    n_survey, e_lo, e_hi = survey_rays(args.files, loc, args.flavor,
-                                       args.max_events, args.step)
-    print(f"Survey: {n_survey} rays, E in [{e_lo:.6g}, {e_hi:.6g}] GeV")
+    n_survey, e_lo, e_hi, w_tot = survey_rays(args.files, loc, args.flavor,
+                                              args.max_events, args.step)
+    mean_w = w_tot / n_survey if n_survey else 0.0
+    print(f"Survey: {n_survey} rays, E in [{e_lo:.6g}, {e_hi:.6g}] GeV, "
+          f"mean weight {mean_w:.6g} /cm^2")
 
     run_info = make_run_info(args.files, pot, loc, args.det_offset, window,
                              nrays=n_survey,
-                             energy_range=(e_lo, e_hi) if n_survey else None)
+                             energy_range=(e_lo, e_hi) if n_survey else None,
+                             total_weight=w_tot)
     sources = [f"{f}:dk2nuTree" for f in args.files]
 
     n_written = 0

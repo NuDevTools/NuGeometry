@@ -5,6 +5,7 @@
 #include "geom/Ray.hh"
 #include "geom/Volume.hh"
 #include "geom/World.hh"
+#include <map>
 
 #include <memory>
 
@@ -47,6 +48,13 @@ class DetectorSim {
 
     void Setup(const std::string &geometry);
     void Setup(NuGeom::World world_) { world = world_; }
+    /// Drop placed volumes from the geometry to speed up traversal.  Must be
+    /// called after Setup() and before Init(), since the envelope calibration
+    /// and every traced ray depend on the volume tree.
+    NuGeom::World::PruneReport Prune(const NuGeom::World::PruneOptions &opts) {
+        return world.Prune(opts);
+    }
+    const NuGeom::World &GetWorld() const { return world; }
 
     // --- Layer-1 envelope calibration ----------------------------------------
     // Layer 1 accepts a ray with probability accept_w / max_prob, where
@@ -141,11 +149,25 @@ class DetectorSim {
         size_t emitted = 0;          // events written
         double sum_weight = 0;       // sum of the emitted events' E.C.1 weights
         size_t envelope_growths = 0; // times the envelope had to be raised
-        size_t clipped = 0;          // rays whose accept_w exceeded the envelope
-        double clipped_excess = 0;   // sum of (accept_w/envelope - 1) over those
+        size_t clipped = 0;          // rays whose acceptance probability exceeded 1
+        double clipped_excess = 0;   // sum of (p_accept - 1) over those
         double pot = 0;
+        size_t traversed = 0;       // rays that actually got a geometry traversal
+        size_t stage1_rejected = 0; // rays rejected by stage 1, before any traversal
     };
     const RunStats &GetRunStats() const { return m_stats; }
+
+    /// Two-stage layer-1 rejection (on by default; exact, not an approximation).
+    ///
+    /// accept_w = flux_scale * total_prob, and total_prob is bounded by the
+    /// probe-ray calibration m_geom_envelope, so the acceptance probability
+    /// p = accept_w/envelope is bounded by q = flux_scale*m_geom_envelope/envelope
+    /// -- which needs only the flux weight, not a geometry traversal.  Throwing
+    /// against q first and, on success, against p/q = total_prob/m_geom_envelope
+    /// gives exactly p while tracing only the rays that survive stage 1.
+    /// On the DUNE ND hall that is ~1 ray in 300.
+    void SetTwoStageRejection(bool on) { m_two_stage = on; }
+    bool TwoStageRejection() const { return m_two_stage; }
     // Log events/POT, sum(w)/POT and their ratio, warning when they disagree.
     void ReportRunSummary() const;
 
@@ -153,6 +175,22 @@ class DetectorSim {
     LineSegments GetLineSegments(const NuGeom::Ray &ray) const {
         return world.GetLineSegments(ray);
     }
+
+    /// Upper bound on a ray's total interaction probability at (energy, pdg).
+    ///
+    /// Built by summing, per element, the LARGEST column density seen along any
+    /// probe ray -- a combination that need not correspond to any physical ray,
+    /// which is exactly what makes it a bound: every real ray's
+    /// sum_e n_e sigma_e is at most sum_e max(n_e) sigma_e.  Unlike a sampled
+    /// max over probe rays it is also energy- and species-resolved, so a 2 GeV
+    /// ray is not held to the worst-case energy's bound.  `m_bound_inflation`
+    /// adapts it upward if a real ray ever exceeds it.
+    double GeomBound(double energy, int nu_pdg) const;
+
+    /// Layer-1 interaction probability without building LineSegments: shares
+    /// the sweep with GetLineSegments but accumulates path length per material.
+    /// Identical value to summing HandleRay's probs, at a fraction of the cost.
+    double ColumnProb(double energy, int nu_pdg, const NuGeom::Ray &ray) const;
 
     std::vector<double> EvaluateProbs(const LineSegments &segments,
                                       const std::map<NuGeom::Element, double> &xsecsmaps);
@@ -202,6 +240,17 @@ class DetectorSim {
     // mode-appropriate cross section) so the per-element rate is unbiased.
     Element PickElement(const Material &mat, double energy, int nu_pdg) const;
 
+    bool m_two_stage{true};
+    /// Largest column density seen per element (probe rays, then adaptively).
+    std::map<NuGeom::Element, double> m_max_col_elem;
+    /// GeomBound table: [species index][energy bin] -> bound over that bin.
+    std::vector<std::vector<double>> m_bound_table;
+    std::vector<double> m_bound_energies; ///< bin edges (log-spaced, size N+1)
+    double m_bound_global{0.0};           ///< max over the whole table (fallback)
+    /// Raised whenever a real ray's probability exceeds the tabulated bound, so
+    /// the bound converges to the true maximum instead of clipping forever.
+    double m_bound_inflation{1.0};
+    size_t m_bound_raises{0};
     NuGeom::World world;
     std::vector<std::shared_ptr<NuGeom::Shape>> shapes;
     std::vector<NuGeom::Material> m_mats;
