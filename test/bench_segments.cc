@@ -1,5 +1,6 @@
 #include "catch2/catch.hpp"
 
+#include "geom/FluxStreamer.hh"
 #include "geom/LineSegment.hh"
 #include "geom/Parser.hh"
 #include "geom/Random.hh"
@@ -446,5 +447,61 @@ TEST_CASE("Layer-1 traversal cost", "[.][travcost]") {
     timeit("GetColumnLengths  ", [&](const NuGeom::Ray &r) { return world.GetColumnLengths(r); });
     timeit("GetLineSegmentsSwp",
            [&](const NuGeom::Ray &r) { return world.GetLineSegmentsSweep(r); });
+    CHECK(true);
+}
+
+// Isolated cost of delivering one ray from the in-memory flux cache.  This is
+// the ~10 us/ray that survives caching: CachedFluxStreamer::Emit rebuilding a
+// Ray (sqrt + 6 divisions) and touching FluxSample's std::function.
+namespace {
+class BenchToyStreamer : public NuGeom::FluxStreamer {
+  public:
+    explicit BenchToyStreamer(std::size_t n) : NuGeom::FluxStreamer("bench", true), m_n{n} {
+        m_count = n;
+    }
+    bool TryNext(NuGeom::FluxSample &fs) override {
+        if(m_pos >= m_n) return false;
+        const double f = static_cast<double>(m_pos);
+        fs.energy = 1.0 + 0.001 * f;
+        fs.pdg = 14;
+        fs.ray =
+            NuGeom::Ray(NuGeom::Vector3D(f, -f, 0.0), NuGeom::Vector3D(0.01 * f, 0.02, 1.0), 1.5);
+        fs.flux_weight = 1.0 + f;
+        fs.window_area = 239696.8;
+        ++m_pos;
+        return true;
+    }
+
+  protected:
+    void Rewind() override { m_pos = 0; }
+
+  private:
+    std::size_t m_n, m_pos = 0;
+};
+} // namespace
+
+TEST_CASE("Cached flux delivery cost", "[.][fluxcost]") {
+    constexpr std::size_t kRays = 200000;
+    constexpr std::size_t kDraws = 2000000;
+    for(bool importance : {false, true}) {
+        NuGeom::CachedFluxStreamer::Options opts;
+        opts.cache = true;
+        opts.importance = importance;
+        NuGeom::CachedFluxStreamer s(std::make_unique<BenchToyStreamer>(kRays), opts);
+        for(std::size_t i = 0; i < kRays + 1; ++i) s.Next(); // fill / arm
+
+        double best_ns = 1e30;
+        for(int rep = 0; rep < 3; ++rep) {
+            auto t0 = std::chrono::high_resolution_clock::now();
+            double acc = 0.0;
+            for(std::size_t i = 0; i < kDraws; ++i) acc += s.Next().energy;
+            auto t1 = std::chrono::high_resolution_clock::now();
+            REQUIRE(acc > 0.0);
+            best_ns = std::min(best_ns, std::chrono::duration<double, std::nano>(t1 - t0).count() /
+                                            static_cast<double>(kDraws));
+        }
+        std::cout << "  cached delivery" << (importance ? " (importance)" : "            ") << ": "
+                  << best_ns << " ns/ray\n";
+    }
     CHECK(true);
 }
