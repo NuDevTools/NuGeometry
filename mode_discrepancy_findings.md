@@ -342,3 +342,71 @@ Caveats on the remaining argon-vs-DUNE gap (5.9e7 vs ~1e6):
 2. **⟨w⟩ = 1.41 for argon** (29% overweight tail) against 1.04 for carbon. The
    argon card uses `EnergyRange: [10, 100000]` where the carbon card uses
    [100, 10000] — exactly the max_w inflation documented above, now much worse.
+
+## 1e18 POT: the modes are NOT fully consistent (2026-09-02)
+
+Argon, QE+RES with cascade, cache + importance sampling, run cards differing
+only in `Driver/Mode`.
+
+```
+total     97467 events / 209614 rays    events/POT = 9.7467e-14   <w> = 1.0346
+envelope  93230 events / 1552910 rays   sum(w)/POT = 9.6307e-14   <w> = 1.0330
+
+R = (envelope sum(w)/POT) / (total events/POT) = 0.9881 +/- 0.0045   (2.6 sigma)
+```
+
+The same pair at 1e17 gave R = 0.9861 +/- 0.0143 (1.0 sigma) -- the *same* 1.2%
+deficit, previously invisible for want of statistics. Combined: 2.8 sigma. So
+the earlier "consistent" verdicts were precision-limited, not evidence of
+agreement.
+
+### It is confined to E_nu > 4 GeV, and it is not the geometry
+
+Vertex distributions agree exactly (vertex z chi2 = 24/29, p = 0.72; material
+composition p = 1.0), and the mean E.C.1 weight agrees bin-by-bin in energy.
+The disagreement is purely spectral:
+
+| E_nu [GeV] | sigma_spline [pb] | envelope sum(w) frac | total N | env/tot |
+|---|---|---|---|---|
+| 0.5-1.0 | 0.2650 | 0.05084 | 4919 | 1.007 |
+| 1.5-2.0 | 0.3798 | 0.15441 | 14934 | 1.008 |
+| 2.5-3.0 | 0.3991 | 0.18264 | 17654 | 1.008 |
+| 3.0-4.0 | 0.4041 | 0.23695 | 22334 | 1.034 |
+| 4.0-5.0 | 0.4163 | 0.04866 | 4982 | 0.952 |
+| 5.0-6.0 | 0.4215 | 0.01197 | 1410 | 0.828 |
+| 6.0-8.0 | 0.4229 | 0.01246 | 1510 | 0.804 |
+| 8.0-10.0| 0.4349 | 0.00803 | 1163 | 0.673 |
+
+Above 4 GeV is only ~8% of the rate, and a ~20% average deficit there
+reproduces the 1.2% overall offset -- the arithmetic closes.
+
+### Mechanism: the two modes take sigma_tot from different places
+
+* `TotalXSecRetry` layer 1 accepts with the **sigma_tot spline**, and retries
+  until emit, so exactly one event per accepted vertex: its *unweighted*
+  spectrum is `w * N_col * sigma_spline(E)`.
+* `EnvelopeNoRetry` layer 1 accepts with an energy-INdependent `sigma_env`
+  (`AchillesAdapter::EnvelopeXSec` discards its energy argument), and the
+  generator's single shot restores the energy dependence through the emitted
+  weights: its *weighted* spectrum is `w * N_col * sigma_weights(E)`.
+
+So `env_weighted(E) / tot_unweighted(E)` measures `sigma_weights / sigma_spline`
+directly -- the ratio column above. Corroborated by E.C.4, where the same two
+estimators sit 8.1% apart and, tellingly, that gap is **stable** between 1e17
+(0.382166 vs 0.353572) and 1e18 (0.382051 vs 0.353528): a fixed estimator
+difference, not a drift.
+
+**Which one is right cannot be decided from outside Achilles.** Either the
+spline over-predicts above 4 GeV, or VEGAS under-samples the high-energy phase
+space so the generated weights integrate low. The test is an Achilles-side
+comparison of the spline against a direct high-statistics integration at fixed
+5-10 GeV. Until then, note that `envelope` mode's spectrum reflects the events
+actually generated, while `total` mode's reflects the spline it accepted on.
+
+### Analysis convention (a correction)
+
+The comparison must be **envelope-weighted against total-UNweighted** -- the
+same split as `sum(w)/POT` vs `events/POT`, extended to the differential
+spectrum. Comparing weighted-to-weighted (as `build/mode_plots.py` originally
+did) adds a spurious `<W>(E)` tilt; it is invisible below ~1e5 events and
+obvious above. The conclusion above holds under either convention.
