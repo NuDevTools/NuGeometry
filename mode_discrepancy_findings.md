@@ -410,3 +410,60 @@ same split as `sum(w)/POT` vs `events/POT`, extended to the differential
 spectrum. Comparing weighted-to-weighted (as `build/mode_plots.py` originally
 did) adds a spurious `<W>(E)` tilt; it is invisible below ~1e5 events and
 obvious above. The conclusion above holds under either convention.
+
+## The spline hypothesis is WRONG; it is a heavy-tailed estimator (2026-09-02)
+
+`adapters/achilles/xsec_scan` drives the linked Achilles directly, with no
+geometry or flux: at fixed energy it compares `EventGen::TotalXSec(E)` (the
+spline, which `TotalXSecRetry` accepts on) against the mean of
+`LastEvent().Weight() * VertexEnvelope` over trials with rejected trials counted
+as zero (the estimator `EnvelopeNoRetry` uses).
+
+```
+   E [GeV]   sigma_spline   sigma_weights   ratio    emit_frac  top1%   wmax/mean
+     1.0        0.31798        0.31203      0.981     0.0844    0.182      70
+     2.0        0.39455        0.38251      0.970     0.1110    0.109      31
+     3.0        0.39025        0.39069      1.001     0.1139    0.103      49
+     5.0        0.42185        0.43271      1.026     0.1255    0.099      63
+     8.0        0.44430        0.42945      0.967     0.1198    0.136      51
+    10.0        0.41433        0.42934      1.036     0.1154    0.168      52
+```
+
+**The two agree at every energy** (mean ratio 0.996, scatter consistent with the
+~2% statistical errors, no trend). So the spline is not over-predicting at high
+energy, and the hypothesis in the previous section is refuted.
+
+### What it actually is
+
+Instrumenting layer 1 (`NUGEOM_VERTEX_DUMP=<file>` dumps `energy,emitted` per
+accepted vertex) separates the two layers:
+
+| E_nu [GeV] | P_emit in-run | P_emit fixed-E scan | ratio |
+|---|---|---|---|
+| 0.5-1.0 | 0.0634 | 0.0844 | 0.75 |
+| 1.5-2.0 | 0.1117 | 0.1110 | 1.01 |
+| 2.5-4.0 | 0.116-0.120 | 0.114-0.115 | ~1.02 |
+| 5.0-6.0 | 0.1055 | 0.1244 | 0.85 |
+| 8.0-10.0| 0.0860 | 0.1154 | 0.75 |
+
+`total` emits on 0.9999 of accepted vertices at every energy (it retries), so it
+is unaffected. `envelope` takes one shot, and its per-energy yield falls short in
+the flux **tails** -- at BOTH ends, not just high E.
+
+That U-shape is exactly the U-shape of the weight tail in the table above: the
+top 1% of trials carry 18% of the total at 1 GeV and 17% at 10 GeV, against 10%
+at 3 GeV, and a single trial can carry 50-230x the mean. `envelope`'s estimator
+is a sample mean of that heavy-tailed weight; `total`'s is a Bernoulli count
+with bounded variance. A sample mean of a heavy-tailed positive variable is
+unbiased in expectation but **median-biased low** -- most runs sit under the
+true value, a rare one far over -- so the deficit is a convergence artifact,
+concentrated where the flux (and hence the per-bin trial count) is thinnest.
+
+Consistent with that, the deficit shrank with statistics rather than staying
+fixed: R = 0.9861 at 1e17, 0.9881 at 1e18.
+
+**Practical consequence.** `total` mode's spectrum is statistically robust at
+these sample sizes; `envelope` mode's needs far more trials in the flux tails
+before its differential spectrum can be trusted, even though both modes'
+integrated rates agree to ~1%. This is a property of the estimator, not a bug in
+either mode.

@@ -32,3 +32,8 @@ target_link_libraries(nugeom_achilles
 # End-to-end driver: Achilles events through the NuGeometry detector.
 add_executable(achilles_geom_driver achilles_driver.cc)
 target_link_libraries(achilles_geom_driver PRIVATE project_options nugeom_achilles)
+
+# Diagnostic: Achilles' sigma_tot spline vs the integral of its own generated
+# weights, at fixed energy.  See mode_discrepancy_findings.md.
+add_executable(xsec_scan xsec_scan.cc)
+target_link_libraries(xsec_scan PRIVATE project_options nugeom_achilles)

@@ -5,6 +5,7 @@
 #include "geom/Parser.hh"
 #include "geom/Random.hh"
 #include <cstdlib>
+#include <fstream>
 
 // HepMC3 and NuHepMC headers trip our strict warnings; silence them here.
 #pragma GCC diagnostic push
@@ -512,6 +513,15 @@ bool DetectorSim::ProduceEvent() {
     if(p_stage2 < NuGeom::Random::Instance().Uniform(0.0, 1.0)) return false;
     ++m_stats.accepted;
 
+    // Diagnostic (NUGEOM_VERTEX_DUMP=<file>): one line per layer-1 accepted
+    // vertex, "energy,emitted".  Lets the accepted-vertex energy spectrum be
+    // separated from the generator's emit probability, which is the only way to
+    // tell whether a mode-to-mode spectral difference arises at layer 1 or
+    // layer 2.  Off unless the variable is set.
+    static const char *dump_path = std::getenv("NUGEOM_VERTEX_DUMP");
+    static std::ofstream dump(dump_path ? dump_path : "/dev/null");
+    const bool dumping = dump_path != nullptr;
+
     // Accepted: now pay for the full segment list, which PickVertex needs to
     // place the vertex.  Draw against this traversal's own total so a last-bit
     // difference in summation order cannot walk off the end of `probs`.
@@ -579,6 +589,8 @@ bool DetectorSim::ProduceEvent() {
         emitted = m_generator->GenerateEvent(evt);
         if(!emitted) NuGeom::Log().trace("ProduceEvent: generator rejected the single-shot trial");
     }
+
+    if(dumping) dump << fs.energy << ',' << (emitted ? 1 : 0) << '\n';
 
     if(emitted) {
         // Track the E.C.1 weight the generator attached.  A partial unweighter
