@@ -87,6 +87,54 @@ int main(int argc, char *argv[]) {
         return 0;
     }
 
+    // Direction scan: fixed energy, injected off-axis.  Both other modes always
+    // inject along +z, whereas a flux run injects each ray's actual lab
+    // direction through the GeometryBeam rotation.  Flux angles here are tiny
+    // (median 0.18 deg, max 3.7 deg) but the scan goes well past that to expose
+    // any pathology in the rotation path.
+    if(const char *ang_e = std::getenv("XSEC_SCAN_ANGLE")) {
+        const double E = std::strtod(ang_e, nullptr);
+        const double e_mev = E * 1000.0;
+        const double spline = gen.TotalXSec(e_mev, nu, target) * cm2_to_pb;
+        std::cout << "ANGLE SCAN at E = " << E << " GeV (sigma_spline = " << spline << " pb)\n";
+        std::cout << "   theta [deg]   sigma_weights   ratio   emit_frac\n";
+        // XSEC_SCAN_ANGLES overrides the list, so the same angle can be
+        // repeated (does the collapse follow the ANGLE?) or the order reversed
+        // (does it follow POSITION IN THE SEQUENCE, i.e. generator state?).
+        std::vector<double> angles{0.0, 0.2, 1.0, 2.0, 4.0, 10.0, 30.0, 90.0, 180.0};
+        if(const char *lst = std::getenv("XSEC_SCAN_ANGLES")) {
+            angles.clear();
+            std::string t(lst);
+            std::size_t pos = 0;
+            while(pos < t.size()) {
+                std::size_t c = t.find(',', pos);
+                if(c == std::string::npos) c = t.size();
+                angles.push_back(std::strtod(t.substr(pos, c - pos).c_str(), nullptr));
+                pos = c + 1;
+            }
+        }
+        for(double deg : angles) {
+            const double th = deg * M_PI / 180.0;
+            achilles::FourVector p4{e_mev, e_mev * std::sin(th), 0.0, e_mev * std::cos(th)};
+            double sum = 0.0;
+            std::size_t emitted = 0;
+            for(std::size_t i = 0; i < ntrials; ++i) {
+                gen.InjectRay(p4, nu, target);
+                if(gen.GenerateSingleEvent()) {
+                    sum += gen.LastEvent().Weight() * M * cm2_to_pb;
+                    ++emitted;
+                }
+            }
+            const double n = static_cast<double>(ntrials);
+            std::cout.precision(5);
+            std::cout << std::fixed << "   " << deg << "        " << sum / n << "     "
+                      << (spline > 0 ? sum / n / spline : 0.0) << "   "
+                      << static_cast<double>(emitted) / n << "\n";
+        }
+        gen.Finalize();
+        return 0;
+    }
+
     for(double E : grid) {
         const double e_mev = E * 1000.0;
         const double spline = gen.TotalXSec(e_mev, nu, target) * cm2_to_pb;

@@ -527,3 +527,78 @@ NuGeometry side against a scalar max_w in Achilles would introduce a real bias.
 blocked and interleaved -- inject along +z, whereas the run injects each ray's
 actual lab direction through the GeometryBeam rotation path. That is the main
 untested difference and is where to look next.
+
+## ROOT CAUSE FOUND: Achilles' weights collapse ~9x on a sparse set of (E, theta) above ~7 GeV
+
+The untested difference was the injection direction. `XSEC_SCAN_ANGLE=<E>`
+holds the energy fixed and injects off-axis; `XSEC_SCAN_ANGLES=<list>` sets the
+angles. At 8 GeV on Ar40, 1500-8000 trials per point:
+
+```
+theta [deg]   sigma_weights [pb]   ratio to spline   emit_frac
+   0.0             0.4314               0.971          0.1200
+   0.2             0.4495               1.012          0.1240
+   1.0             0.0467               0.105          0.0135   <-- collapse
+   1.5             0.4200               0.945          0.1183
+   2.0             0.0611               0.137          0.0170   <-- collapse
+   3.0             0.4414               0.993          0.1243
+   5.0             0.4554               1.025          0.1270
+   8.0             0.0478               0.108          0.0130   <-- collapse
+  12.0             0.4151               0.934          0.1145
+  30.0             0.0489               0.110          0.0135   <-- collapse
+  45.0/60/90       0.40-0.43            0.90-0.97      0.111-0.121
+```
+
+Both the emit fraction and the cross section drop by the same ~9x, so the
+generated weights themselves are ~9x too small -- the mean weight per emitted
+event is unchanged.
+
+**It is real, deterministic, and follows the angle:**
+* Repeating theta = 1 deg six times gives 0.0134-0.0155 every time; theta = 0
+  deg six times gives 0.114-0.121 every time. So it is the angle, not generator
+  state or position in the call sequence.
+* Two fresh processes produce **bit-identical** numbers at every angle.
+
+**It has a sharp energy threshold.** Scanning 20 angles over 0-5 deg (the flux
+spans 0-3.7 deg, median 0.18 deg) at each energy:
+
+| E [GeV] | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 |
+|---|---|---|---|---|---|---|---|---|---|
+| fraction of angles that collapse | 0 | 0 | 0 | 0 | 0 | 0.30 | 0.10 | 0.10 | 0.10 |
+
+Nothing below 7 GeV; 10-30% above.
+
+### This explains the whole mode discrepancy
+
+In a flux run every ray has its own (E, theta), so above ~5 GeV some fraction
+land on a bad configuration and are ~9x less likely to emit:
+
+| E_nu [GeV] | P_emit in-run | nominal | implied bad fraction |
+|---|---|---|---|
+| 5-6 | 0.1055 | 0.125 | ~17% |
+| 6-8 | 0.0984 | 0.122 | ~20% |
+| 8-10| 0.0860 | 0.117 | ~30% |
+
+which matches the 10-30% measured directly, and reproduces the observed
+env/tot ratios (0.83, 0.80, 0.67) and hence the 1.2% integrated offset.
+
+**`total` mode is immune because it retries** -- a bad configuration just needs
+more attempts, so it still emits (P_emit = 0.9999 at every energy). That is also
+the origin of the "Generator failed to emit after 100000 retries" warnings: the
+worst configurations defeat even the retry cap (26 of 97467 events at 1e18).
+`envelope` takes one shot and loses ~9 of every 10 such vertices.
+
+### Minimal reproducer
+
+```
+XSEC_SCAN_ANGLE=8 XSEC_SCAN_ANGLES="0,1" xsec_scan argon_achilles.yml 2000
+  ->  theta=0 deg: sigma 0.431 pb, emit 0.117
+      theta=1 deg: sigma 0.047 pb, emit 0.014
+```
+
+Same energy, same target, same process group; only the injected direction
+differs, and neither angle is degenerate. This is an Achilles-side defect on the
+`InjectRay` / `GenerateSingleEvent` path -- the same path the NuGeometry adapter
+uses -- and it corrupts the event weights for those configurations in BOTH
+modes; `total` merely hides it by retrying, since its rate estimator counts
+events rather than summing weights.
