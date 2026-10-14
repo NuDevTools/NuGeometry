@@ -26,14 +26,20 @@ print(f"R = {R:.4f} +/- {eR:.4f}   ({abs(R-1)/eR:.1f} sigma from 1)\n")
 
 for d in (env, tot):
     d['theta'] = np.degrees(np.arccos(np.clip(d['cos'], -1, 1)))
-VARS = [('Enu', r'$E_\nu$ [GeV]'), ('Emu', r'$E_\mu$ [GeV]'),
-        ('Q2',  r'$Q^2$ [GeV$^2$]'), ('theta', r'$\theta_\mu$ [deg]'),
-        ('z',   'vertex $z$ [cm]'), ('x',  'vertex $x$ [cm]')]
+# (key, label, layer1?) -- layer1 observables compare against total's COUNTS,
+# internal kinematics against total's WEIGHTS.  See the module docstring.
+# E_mu is MIXED -- it inherits the layer-1 neutrino energy and the generator's
+# internal energy transfer -- so neither convention is exact for it; counts are
+# empirically the closer of the two.  Only a strict unweighter removes the
+# ambiguity (see the module docstring).
+VARS = [('Enu', r'$E_\nu$ [GeV]', True), ('Emu', r'$E_\mu$ [GeV]', True),
+        ('Q2',  r'$Q^2$ [GeV$^2$]', False), ('theta', r'$\theta_\mu$ [deg]', False),
+        ('z',   'vertex $z$ [cm]', True), ('x',  'vertex $x$ [cm]', True)]
 
 fig = plt.figure(figsize=(15, 10), facecolor=SURF)
 gs = GridSpec(5, 3, height_ratios=[3,1,0.9,3,1], hspace=0.08, wspace=0.28)
 results = []
-for i,(k,xlabel) in enumerate(VARS):
+for i,(k,xlabel,layer1) in enumerate(VARS):
     row, col = (0 if i < 3 else 3), i % 3
     ax = fig.add_subplot(gs[row, col]); axr = fig.add_subplot(gs[row+1, col], sharex=ax)
     a, b = env[k], tot[k]
@@ -42,9 +48,11 @@ for i,(k,xlabel) in enumerate(VARS):
 
     h1,_ = np.histogram(a, bins=bins, weights=env['w'])
     s1,_ = np.histogram(a, bins=bins, weights=env['w']**2)
-    # envelope: weighted.  total: UNWEIGHTED (see the module docstring).
-    h2,_ = np.histogram(b, bins=bins)
-    s2,_ = np.histogram(b, bins=bins)
+    # envelope: always weighted.  total: counts for layer-1 observables,
+    # weights for generator-internal kinematics (see the module docstring).
+    tw = None if layer1 else tot['w']
+    h2,_ = np.histogram(b, bins=bins, weights=tw)
+    s2,_ = np.histogram(b, bins=bins, weights=None if tw is None else tw**2)
     W1, W2 = h1.sum(), h2.sum()
     n1, e1 = h1/W1, np.sqrt(s1)/W1
     n2, e2 = h2/W2, np.sqrt(s2)/W2
@@ -60,7 +68,7 @@ for i,(k,xlabel) in enumerate(VARS):
     ax.set_facecolor(SURF); ax.grid(True, color=GRID, lw=0.6, alpha=.8); ax.set_axisbelow(True)
     ax.tick_params(labelbottom=False, colors=INK2, labelsize=8)
     ax.set_ylabel('fraction / bin', color=INK2, fontsize=9)
-    ax.set_title(f'{xlabel}   $\\chi^2$/dof={chi2:.0f}/{dof}, p={p_chi:.2f}',
+    ax.set_title(f'{xlabel} [{"cnt" if layer1 else "wgt"}]  $\\chi^2$/dof={chi2:.0f}/{dof}, p={p_chi:.2f}',
                  color=INK, fontsize=10, pad=6)
     for s in ax.spines.values(): s.set_color(GRID)
     if i == 0: ax.legend(frameon=False, fontsize=9, labelcolor=INK2)
@@ -76,7 +84,8 @@ for i,(k,xlabel) in enumerate(VARS):
     axr.tick_params(colors=INK2, labelsize=8)
     for s in axr.spines.values(): s.set_color(GRID)
 
-fig.suptitle(f'DetectorSim sampling modes: envelope sum(w) vs total counts  '
+fig.suptitle(f'DetectorSim sampling modes: envelope sum(w) vs total '
+             f'[cnt]=counts / [wgt]=weights per observable  '
              f'(POT = {stot["pot"]:.3g}; {len(env["w"])} envelope vs {len(tot["w"])} total events)',
              color=INK, fontsize=12, y=0.965)
 fig.savefig(f'{tag}_mode_compare.png', dpi=140, facecolor=SURF, bbox_inches='tight')

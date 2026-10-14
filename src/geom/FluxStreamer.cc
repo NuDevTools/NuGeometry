@@ -126,6 +126,34 @@ bool ExtractHepMCRay(const HepMC3::GenEvent &evt, const NuGeom::Vector3D &offset
     fs.flux_weight = weight;
     fs.window_area = window_area;
     fs.decorate = nullptr;
+
+    // Provenance: the parent hadron is the neutrino's production-vertex input
+    // (dk2nu writes it status-4), and that vertex IS the decay point.  The same
+    // beam->detector offset the ray origin gets is applied, so the decay point
+    // and the interaction vertex end up in one frame.
+    fs.provenance = NuGeom::FluxProvenance{};
+    const auto &parents = vtx->particles_in();
+    if(!parents.empty()) {
+        const auto &par = parents.front();
+        const auto &pmom = par->momentum();
+        fs.provenance.valid = true;
+        fs.provenance.parent_pdg = par->pid();
+        fs.provenance.parent_px = pmom.px();
+        fs.provenance.parent_py = pmom.py();
+        fs.provenance.parent_pz = pmom.pz();
+        fs.provenance.parent_e = pmom.e();
+        fs.provenance.decay_x = pos.x() + offset.X();
+        fs.provenance.decay_y = pos.y() + offset.Y();
+        fs.provenance.decay_z = pos.z() + offset.Z();
+    }
+    if(auto a = evt.attribute<HepMC3::DoubleAttribute>("dk2nu.nimpwt")) {
+        fs.provenance.nimpwt = a->value();
+        fs.provenance.valid = true;
+    }
+    if(auto a = evt.attribute<HepMC3::DoubleAttribute>("dk2nu.nuray_wgt"))
+        fs.provenance.nuray_wgt = a->value();
+    if(auto a = evt.attribute<HepMC3::IntAttribute>("dk2nu.tgtexit.tptype"))
+        fs.provenance.tgtexit_tptype = a->value();
     return true;
 }
 
@@ -458,6 +486,7 @@ void CachedFluxStreamer::Emit(const Cached &c, FluxSample &fs, double weight_ove
     fs.flux_weight = weight_override > 0.0 ? weight_override : c.weight;
     fs.window_area = m_window_area;
     fs.decorate = nullptr;
+    fs.provenance = c.provenance;
 }
 
 void CachedFluxStreamer::BuildSampler() {
@@ -554,7 +583,7 @@ bool CachedFluxStreamer::TryNext(FluxSample &fs) {
             const auto &o = fs.ray.Origin();
             const auto &d = fs.ray.Direction();
             m_rays.push_back(Cached{fs.energy, o.X(), o.Y(), o.Z(), d.X(), d.Y(), d.Z(),
-                                    fs.flux_weight, fs.pdg});
+                                    fs.flux_weight, fs.provenance, fs.pdg});
         }
     }
     return true;

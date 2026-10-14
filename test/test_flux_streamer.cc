@@ -332,3 +332,57 @@ TEST_CASE("Importance sampling is unbiased and flattens the weight spread",
     CHECK(static_cast<double>(hits[4]) / static_cast<double>(kDraws) ==
           Approx(w[4] / total).epsilon(0.02));
 }
+
+// ---------------------------------------------------------------------------
+// Flux provenance: what produced the neutrino.  dk2nu records the parent hadron
+// and its decay point, and the converter writes them into the flux file; both
+// used to be dropped on read, so a generated event could not be tied back to
+// the beamline decay that made its neutrino.
+// ---------------------------------------------------------------------------
+TEST_CASE("HepMCFluxStreamer extracts the parent hadron and decay point",
+          "[FluxStreamer][Provenance]") {
+    const auto path = WriteHepMCFlux("nugeom_streamer_provenance.hepmc", 3);
+    NuGeom::HepMCFluxStreamer streamer(path, /*loop=*/false);
+
+    NuGeom::FluxSample fs;
+    REQUIRE(streamer.TryNext(fs));
+    REQUIRE(fs.provenance.valid);
+    // The fixture's parent is a pi+ carrying the neutrino's energy along +z.
+    CHECK(fs.provenance.parent_pdg == 211);
+    CHECK(fs.provenance.parent_e == Approx(fs.energy));
+    CHECK(fs.provenance.parent_pz == Approx(fs.energy));
+    // The decay point is the neutrino's production vertex, in the SAME frame as
+    // the ray origin: the file's beam->detector offset (10,20,30) is applied to
+    // both, so the decay and the interaction are directly comparable.
+    CHECK(fs.provenance.decay_x == Approx(fs.ray.Origin().X()));
+    CHECK(fs.provenance.decay_y == Approx(fs.ray.Origin().Y()));
+    CHECK(fs.provenance.decay_z == Approx(fs.ray.Origin().Z()));
+    CHECK(fs.provenance.decay_y == Approx(20.0)); // vertex y=0 + offset y=20
+}
+
+TEST_CASE("Provenance survives the in-memory cache", "[FluxStreamer][Provenance][Cache]") {
+    const auto path = WriteHepMCFlux("nugeom_streamer_prov_cache.hepmc", 3);
+    NuGeom::CachedFluxStreamer::Options opts;
+    opts.cache = true;
+    NuGeom::CachedFluxStreamer s(std::make_unique<NuGeom::HepMCFluxStreamer>(path, /*loop=*/true),
+                                 opts);
+
+    std::vector<int> pass1, pass2;
+    std::vector<double> z1, z2;
+    for(int i = 0; i < 3; ++i) {
+        auto fs = s.Next();
+        pass1.push_back(fs.provenance.parent_pdg);
+        z1.push_back(fs.provenance.decay_z);
+    }
+    for(int i = 0; i < 4; ++i) { // the 4th call flips over to the cache
+        auto fs = s.Next();
+        if(i == 0) continue;
+        pass2.push_back(fs.provenance.parent_pdg);
+        z2.push_back(fs.provenance.decay_z);
+    }
+    REQUIRE(s.CachedRays() == 3);
+    CHECK(pass1 == std::vector<int>{211, 211, 211});
+    CHECK(pass2.size() == 3);
+    CHECK(pass2 == pass1);
+    for(std::size_t i = 0; i < z2.size(); ++i) CHECK(z2[i] == Approx(z1[i]));
+}

@@ -93,10 +93,12 @@
 #include "spdlog/sinks/stdout_color_sinks.h"
 #include "spdlog/spdlog.h"
 
+#include <iomanip>
 #include <iostream>
 #include <memory>
 #include <optional>
 #include <set>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -307,7 +309,9 @@ int main(int argc, char **argv) {
     try {
         // Run-card mode: first argument is a YAML file (not a --flag).
         DriverConfig cfg;
+        std::string card_path = "<flags>";
         if(argc > 1 && argv[1][0] != '-') {
+            card_path = argv[1];
             cfg = FromRunCard(argv[1]);
         } else if(HasOption(argc, argv, "--geometry")) {
             cfg = FromFlags(argc, argv);
@@ -433,6 +437,45 @@ int main(int argc, char **argv) {
                   << beam_range->first / 1000.0 << ", " << beam_range->second / 1000.0
                   << "] GeV...\n";
         sim.Init(cfg.init_rays);
+
+        // Driver-level provenance, stamped after Init() (which wrote the
+        // Achilles GR.* block and NuGeometry's own) and before any event, so
+        // all three end up in the single NuHepMC header.  Reproducing a run
+        // should need nothing beyond the output file.
+        sim.SetRunAttribute("NuGeom.Driver", "achilles_geom_driver");
+        sim.SetRunAttribute("NuGeom.Driver.RunCard", card_path);
+        sim.SetRunAttribute("NuGeom.Geometry.File", cfg.geometry);
+        sim.SetRunAttribute("NuGeom.Flux.File", cfg.rays_file);
+        sim.SetRunAttribute("NuGeom.Flux.Loop", cfg.loop_rays ? "true" : "false");
+        sim.SetRunAttribute("NuGeom.Flux.Cached", cfg.cache_rays ? "true" : "false");
+        sim.SetRunAttribute("NuGeom.Flux.ImportanceSampling",
+                            cfg.importance_rays ? "true" : "false");
+        sim.SetRunAttribute("NuGeom.Flux.RaysPerPass", std::to_string(streamer->Count()));
+        if(streamer->HasWeightSummary()) {
+            std::ostringstream mw;
+            mw << std::setprecision(17) << streamer->MeanFluxWeight();
+            sim.SetRunAttribute("NuGeom.Flux.MeanWeight", mw.str());
+        }
+        sim.SetRunAttribute("NuGeom.InitRays", std::to_string(cfg.init_rays));
+        if(cfg.events > 0)
+            sim.SetRunAttribute("NuGeom.Run.TargetEvents", std::to_string(cfg.events));
+        else {
+            std::ostringstream pot;
+            pot << std::setprecision(17) << cfg.pot;
+            sim.SetRunAttribute("NuGeom.Run.TargetPOT", pot.str());
+            // NuHepMC G.C.1: the exposure a downstream analysis normalizes by.
+            // The run stops on the first ray past the target, so the achieved
+            // POT matches this to within one ray.
+            sim.SetExposurePOT(cfg.pot);
+        }
+        if(cfg.prune_min_mass_fraction > 0.0 || !cfg.prune_drop_materials.empty()) {
+            std::ostringstream pf;
+            pf << std::setprecision(17) << cfg.prune_min_mass_fraction;
+            sim.SetRunAttribute("NuGeom.Prune.MinMassFraction", pf.str());
+            std::string drops;
+            for(const auto &m : cfg.prune_drop_materials) drops += (drops.empty() ? "" : ",") + m;
+            if(!drops.empty()) sim.SetRunAttribute("NuGeom.Prune.DropMaterials", drops);
+        }
 
         if(cfg.events > 0) {
             std::cout << "Generating " << cfg.events << " events...\n";

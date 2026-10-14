@@ -27,6 +27,29 @@ namespace NuGeom {
 // `decorate` (optional) writes flux-specific NuHepMC attributes onto the event
 // that eventually results from this sample (parent hadron info, flux window,
 // etc.).  Left null for toy flux sources.
+// Provenance of one flux ray: what produced the neutrino.  dk2nu records the
+// parent hadron and the point at which it decayed, and the NuHepMC flux file
+// carries them (parent as the status-4 particle, decay point as its production
+// vertex).  Forwarding them onto the generated event is what lets an analysis
+// tie an interaction back to the beamline decay that made its neutrino.
+//
+// `valid` is false for toy flux sources and for CSV files, which carry no
+// parent information; nothing is written in that case.
+struct FluxProvenance {
+    bool valid = false;
+    int parent_pdg = 0;     ///< dk2nu ptype: the decaying hadron
+    double parent_px = 0.0; ///< parent momentum at decay, event momentum units
+    double parent_py = 0.0;
+    double parent_pz = 0.0;
+    double parent_e = 0.0;
+    double decay_x = 0.0; ///< decay point, event length units, DETECTOR frame
+    double decay_y = 0.0;
+    double decay_z = 0.0;
+    double nimpwt = 0.0;    ///< dk2nu importance weight
+    double nuray_wgt = 0.0; ///< dk2nu per-ray weight at this location
+    int tgtexit_tptype = 0; ///< species exiting the target (0 = not recorded)
+};
+
 struct FluxSample {
     double energy = 0.0;
     int pdg = 0;
@@ -34,6 +57,7 @@ struct FluxSample {
     double flux_weight = 1.0;
     double window_area = 1.0;
     std::function<void(HepMC3::GenEvent &)> decorate;
+    FluxProvenance provenance{};
 };
 
 using FluxCallback = std::function<FluxSample()>;

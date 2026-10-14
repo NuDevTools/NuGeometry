@@ -4,8 +4,11 @@
 #include "geom/Material.hh"
 #include "geom/Parser.hh"
 #include "geom/Random.hh"
+#include "geom/System.hh"
 #include <cstdlib>
 #include <fstream>
+#include <iomanip>
+#include <sstream>
 
 // HepMC3 and NuHepMC headers trip our strict warnings; silence them here.
 #pragma GCC diagnostic push
@@ -40,6 +43,14 @@ namespace {
 
 constexpr int kStatusFinal = NuHepMC::ParticleStatus::UndecayedPhysical;
 constexpr int kStatusIncoming = NuHepMC::ParticleStatus::IncomingBeam;
+// The flux parent decayed to make the neutrino, so it is a decayed physical
+// particle in NuHepMC terms, not a beam particle (the neutrino is the beam).
+constexpr int kStatusFluxParent = NuHepMC::ParticleStatus::DecayedPhysical;
+// NuHepMC vertex status for "the vertex defining a beam particle from a flux",
+// which is exactly the beamline decay that produced our neutrino.  Generators
+// commonly declare this ID (Achilles does); WriteNuGeomRunInfo() adds the
+// declaration if the generator did not, so the file stays self-describing.
+constexpr int kVertexStatusFluxBeam = 24;
 constexpr int kStatusTarget = NuHepMC::ParticleStatus::Target;
 
 // Minimal PDG ion code for a nucleus Z,A (1000000000 + Z*10000 + A*10).
@@ -65,7 +76,89 @@ DetectorSim::~DetectorSim() = default;
 
 void DetectorSim::SetEventFile(const std::string &outfile) {
     if(!m_run_info) m_run_info = std::make_shared<HepMC3::GenRunInfo>();
-    m_writer = std::make_unique<HepMC3::WriterAscii>(outfile, m_run_info);
+    // Only remember the path.  See the header: constructing the writer here
+    // would freeze an empty run-info header into the file.
+    m_outfile = outfile;
+}
+
+void DetectorSim::EnsureWriter() {
+    if(m_writer || m_outfile.empty()) return;
+    if(!m_run_info) m_run_info = std::make_shared<HepMC3::GenRunInfo>();
+    m_writer = std::make_unique<HepMC3::WriterAscii>(m_outfile, m_run_info);
+}
+
+void DetectorSim::SetRunAttribute(const std::string &key, const std::string &value) {
+    if(!m_run_info) m_run_info = std::make_shared<HepMC3::GenRunInfo>();
+    if(m_writer)
+        NuGeom::Log().warn("DetectorSim::SetRunAttribute('{}'): the run-info header has already "
+                           "been written; this attribute will NOT appear in the output.",
+                           key);
+    m_run_info->add_attribute(key, std::make_shared<HepMC3::StringAttribute>(value));
+}
+
+void DetectorSim::SetExposurePOT(double pot) {
+    if(!m_run_info) m_run_info = std::make_shared<HepMC3::GenRunInfo>();
+    if(!(pot > 0.0)) return;
+    NuHepMC::GC1::SetExposurePOT(m_run_info, pot);
+    // Append G.C.1 to whatever conventions the generator already declared,
+    // rather than overwriting its list.
+    std::vector<std::string> conventions;
+    if(auto a = m_run_info->attribute<HepMC3::VectorStringAttribute>("NuHepMC.Conventions"))
+        conventions = a->value();
+    if(std::find(conventions.begin(), conventions.end(), "G.C.1") == conventions.end()) {
+        conventions.push_back("G.C.1");
+        m_run_info->add_attribute("NuHepMC.Conventions",
+                                  std::make_shared<HepMC3::VectorStringAttribute>(conventions));
+    }
+}
+
+void DetectorSim::WriteNuGeomRunInfo() {
+    if(!m_run_info) m_run_info = std::make_shared<HepMC3::GenRunInfo>();
+
+    // GR.1: identify NuGeometry as a tool alongside the generator's own entry,
+    // so the file records the whole chain that produced it.
+    m_run_info->tools().push_back(
+        {"NuGeometry", NuGeom::Version::version + " (" + NuGeom::Version::gitCommit + ")",
+         "Detector geometry / flux-driven interaction sampler"});
+
+    auto attr = [&](const std::string &k, const std::string &v) {
+        m_run_info->add_attribute(k, std::make_shared<HepMC3::StringAttribute>(v));
+    };
+    auto num = [](double v) {
+        std::ostringstream os;
+        os << std::setprecision(17) << v;
+        return os.str();
+    };
+
+    attr("NuGeom.Version", NuGeom::Version::version);
+    attr("NuGeom.GitCommit", NuGeom::Version::gitCommit);
+    attr("NuGeom.SamplingMode",
+         m_mode == SamplingMode::TotalXSecRetry ? "TotalXSecRetry" : "EnvelopeNoRetry");
+    // Which estimator carries the physical rate in this mode -- the single most
+    // misread number in the output (see mode_discrepancy_findings.md).
+    attr("NuGeom.RateEstimator",
+         m_mode == SamplingMode::TotalXSecRetry ? "events/POT" : "sum(weights)/POT");
+    attr("NuGeom.SafetyFactor", num(m_safety_factor));
+    attr("NuGeom.EnvelopeBurnInRays", std::to_string(m_envelope_burn_in));
+    attr("NuGeom.TwoStageRejection", m_two_stage ? "true" : "false");
+    attr("NuGeom.GeomEnvelope", num(m_geom_envelope));
+    if(m_emin < m_emax) { attr("NuGeom.EnergyRange_GeV", num(m_emin) + "," + num(m_emax)); }
+    std::string species;
+    for(size_t i = 0; i < m_species.size(); ++i)
+        species += (i ? "," : "") + std::to_string(m_species[i]);
+    attr("NuGeom.FluxSpecies", species);
+    attr("NuGeom.Traversal",
+         std::getenv("NUGEOM_TRAVERSAL") ? std::getenv("NUGEOM_TRAVERSAL") : "sweep");
+
+    // Declare the flux-decay vertex status if the generator has not, so a
+    // reader can resolve every status code in the file from its own header.
+    const std::string key =
+        "NuHepMC.VertexStatusInfo[" + std::to_string(kVertexStatusFluxBeam) + "].Name";
+    if(!m_run_info->attribute<HepMC3::StringAttribute>(key)) {
+        attr(key, "Beam");
+        attr("NuHepMC.VertexStatusInfo[" + std::to_string(kVertexStatusFluxBeam) + "].Description",
+             "The vertex defining a beam particle from a flux");
+    }
 }
 
 void DetectorSim::Setup(const std::string &geometry) {
@@ -276,6 +369,11 @@ void DetectorSim::Init(size_t nrays) {
                        "with safety factor {} = {}. The flux-weight scale is learned per ray.",
                        rays.size(), energies.size(), m_species.size(), best, best_e, best_pdg,
                        m_safety_factor, m_geom_envelope);
+
+    // Stamp NuGeometry's run-level metadata now: the generator's GR.* block is
+    // already in place (InitRun above) and no event has been written, so both
+    // end up in the single header HepMC3 emits.
+    WriteNuGeomRunInfo();
 }
 
 void DetectorSim::InitFromFlux(size_t nrays) {
@@ -329,6 +427,7 @@ void DetectorSim::InitFromFlux(size_t nrays) {
 
     NuGeom::Log().info("Maximum probability found with safety factor ({}): {}", m_safety_factor,
                        max_prob);
+    WriteNuGeomRunInfo();
 }
 
 bool DetectorSim::ProduceEvent() {
@@ -568,6 +667,49 @@ bool DetectorSim::ProduceEvent() {
     evt.add_attribute("NuGeom.Flux.POT", std::make_shared<HepMC3::DoubleAttribute>(fs.ray.POT()));
     evt.add_attribute("NuGeom.MaxProbNorm",
                       std::make_shared<HepMC3::DoubleAttribute>(1.0 / envelope));
+    // The ray's own direction, so the incoming neutrino is reconstructible even
+    // after the generator has rewritten the primary vertex's particles.
+    const auto ray_dir = fs.ray.Direction();
+    evt.add_attribute("NuGeom.Flux.RayDirection",
+                      std::make_shared<HepMC3::VectorDoubleAttribute>(
+                          std::vector<double>{ray_dir.X(), ray_dir.Y(), ray_dir.Z()}));
+    evt.add_attribute("NuGeom.Flux.RayOrigin",
+                      std::make_shared<HepMC3::VectorDoubleAttribute>(std::vector<double>{
+                          fs.ray.Origin().X(), fs.ray.Origin().Y(), fs.ray.Origin().Z()}));
+
+    // Provenance: what produced this neutrino.  The parent hadron is attached
+    // as a real particle on its own decay vertex, so the beamline decay and the
+    // interaction sit in one connected history rather than in loose attributes.
+    if(fs.provenance.valid) {
+        const auto &pr = fs.provenance;
+        if(pr.parent_pdg != 0) {
+            auto decay_vtx = std::make_shared<HepMC3::GenVertex>(
+                HepMC3::FourVector(pr.decay_x, pr.decay_y, pr.decay_z, 0.0));
+            decay_vtx->set_status(kVertexStatusFluxBeam);
+            auto parent = std::make_shared<HepMC3::GenParticle>(
+                HepMC3::FourVector(pr.parent_px, pr.parent_py, pr.parent_pz, pr.parent_e),
+                pr.parent_pdg, kStatusFluxParent);
+            decay_vtx->add_particle_in(parent);
+            // The neutrino leaves the decay vertex and enters the interaction
+            // vertex, linking the two into one history.
+            decay_vtx->add_particle_out(nu);
+            evt.add_vertex(decay_vtx);
+            evt.add_attribute("NuGeom.Flux.ParentPDG",
+                              std::make_shared<HepMC3::IntAttribute>(pr.parent_pdg));
+            evt.add_attribute("NuGeom.Flux.DecayPosition_cm",
+                              std::make_shared<HepMC3::VectorDoubleAttribute>(
+                                  std::vector<double>{pr.decay_x, pr.decay_y, pr.decay_z}));
+        }
+        if(pr.nimpwt != 0.0)
+            evt.add_attribute("NuGeom.Flux.dk2nu.nimpwt",
+                              std::make_shared<HepMC3::DoubleAttribute>(pr.nimpwt));
+        if(pr.nuray_wgt != 0.0)
+            evt.add_attribute("NuGeom.Flux.dk2nu.nuray_wgt",
+                              std::make_shared<HepMC3::DoubleAttribute>(pr.nuray_wgt));
+        if(pr.tgtexit_tptype != 0)
+            evt.add_attribute("NuGeom.Flux.dk2nu.tgtexit_tptype",
+                              std::make_shared<HepMC3::IntAttribute>(pr.tgtexit_tptype));
+    }
 
     if(fs.decorate) fs.decorate(evt);
 
@@ -600,6 +742,7 @@ bool DetectorSim::ProduceEvent() {
         // See ReportRunSummary().
         ++m_stats.emitted;
         m_stats.sum_weight += evt.weights().empty() ? 1.0 : evt.weights().front();
+        EnsureWriter();
         if(m_writer) m_writer->write_event(evt);
     }
     return emitted;

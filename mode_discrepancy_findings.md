@@ -659,3 +659,79 @@ residue is the first divergence in otherwise bit-identical traces. What is
 *inferred*: that a downstream phase-space mapper cannot handle m^2 < 0 -- the
 exact line was not pinpointed (`CheckMasses` is only a debug print, a symptom
 rather than the gate).
+
+# Publication readiness review (2026-09-28)
+
+With the Achilles `SetInjected` fix in place (one-ULP spacelike neutrino, see
+above), the two modes were re-compared at publication statistics on argon,
+QE+RES with cascade, cache + importance sampling, run cards differing only in
+`Driver/Mode`.
+
+## The modes agree on the rate to 0.4%
+
+```
+fx17   3e17 (percentile 99)    R = 0.9903 +/- 0.0083   (1.2 sigma)
+pub    1e18 (percentile 99)    R = 1.0096 +/- 0.0046   (2.1 sigma)
+strict 3e17 (percentile 100)   R = 0.9912 +/- 0.0083   (1.1 sigma)
+-------------------------------------------------------------------
+combined                       R = 1.0024 +/- 0.0036   (0.7 sigma)
+```
+
+`R` = envelope `sum(w)/POT` over total `events/POT`. The high-energy deficit is
+gone: the 8-10 GeV bin went from **0.673 +/- 0.033 (9.9 sigma)** before the fix
+to **1.078 +/- 0.047 (1.6 sigma)** after, and E_nu is flat across the range.
+
+**Quote the agreement as 1.00 +/- 0.01, not +/- 0.004.** The three runs scatter
+more than their statistical errors allow (chi2 = 6.4/2, p = 0.04), implying a
+~0.5% run-to-run systematic on top -- most plausibly the envelope's running-max
+evolution, which differs run to run. That is the honest precision of the
+mode-equivalence claim.
+
+## There is no single correct estimator in `total` mode
+
+The per-mode estimator split (`events/POT` in total, `sum(w)/POT` in envelope)
+is the RATE rule. It does NOT extend uniformly to differential distributions.
+Per accepted vertex the generator draws kinematics ~ f*min(1,r) and emits with
+weight max(1,r), so:
+
+| observable | decided by | correct in `total` mode |
+|---|---|---|
+| total rate, E_nu, vertex position | layer 1 | **counts** |
+| Q^2, muon angle | generator, within a vertex | **weights** |
+| E_mu | both (mixed) | neither is exact |
+
+Measured at 1e18 (95k events), using the wrong convention for Q^2 gives
+chi2 = 72/29 (p < 0.001) against 37/29 (p = 0.15) for the right one; for E_nu
+the two swap (35/29 p=0.18 vs 72/29 p<0.001). `EnvelopeNoRetry` **weighted** is
+the only distribution that is exactly physical in every variable, which is why
+it is the reference in `tools/mode_plots.py`.
+
+## CORRECTION: `percentile: 100` does NOT remove the overweight tail
+
+The "What to do about it" section above recommends Achilles
+`Options/Unweighting/percentile: 100` to force `<W> = 1`. **Measured, it does
+nothing:**
+
+```
+                 <w> at percentile 99      <w> at percentile 100
+  total              1.033667                   1.033939
+  envelope           1.033965                   1.032351
+```
+
+The Options block IS being read (`Name: None` changes behaviour -- it aborts
+with `std::bad_alloc`). The percentile simply is not the binding constraint:
+`max_w` is fixed during warm-up and the run then samples weights beyond it, so
+99th vs 100th percentile of the warm-up sample barely differs. The overweight
+tail is therefore a property to be documented and handled, not configured away
+-- which is what `ReportRunSummary()` already does by printing both estimators
+and warning when `<w>` deviates from 1.
+
+## Geometry accuracy
+
+`[overlapscan]` (sweep vs point-in-volume containment, 2000 rays through the
+DUNE ND hall): **1/2000 rays disagree**, all on thin TPC PCB/plane boundaries
+(`volPixelPlane`/`volTPCPlane` [LAr] vs `volTPCPCB` [FR4]). The
+`volDetEnclosure` nested-CSG hall bug noted in profile_findings.md is gone,
+closed by the later parser fixes. The residual is a genuine GDML volume overlap,
+where containment order and the sweep's depth rule disagree and there is no
+single right answer.

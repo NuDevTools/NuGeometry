@@ -68,6 +68,13 @@ set(LIBPREFIX ${CMAKE_SHARED_LIBRARY_PREFIX})
 set(LIBSUFFIX ${CMAKE_SHARED_LIBRARY_SUFFIX})
 set(BUILDPATH ${CMAKE_CURRENT_BINARY_DIR})
 set(INSTALLPATH ${CMAKE_INSTALL_PREFIX})
+# Git commit for run-info provenance; "unknown" outside a checkout.
+execute_process(COMMAND git -C ${CMAKE_CURRENT_SOURCE_DIR} describe --always --dirty
+                OUTPUT_VARIABLE NUGEOM_GIT_COMMIT OUTPUT_STRIP_TRAILING_WHITESPACE
+                ERROR_QUIET)
+if(NOT NUGEOM_GIT_COMMIT)
+    set(NUGEOM_GIT_COMMIT "unknown")
+endif()
 configure_file(include/geom/System.hh.in ${CMAKE_CURRENT_SOURCE_DIR}/include/geom/System.hh)
 
 # Testing

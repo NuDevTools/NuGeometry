@@ -44,7 +44,28 @@ class DetectorSim {
     void SetSamplingMode(SamplingMode m) { m_mode = m; }
     SamplingMode GetSamplingMode() const { return m_mode; }
 
+    /// Output NuHepMC file.  The writer is created lazily, on the first event,
+    /// because HepMC3's WriterAscii emits the run info in its CONSTRUCTOR: built
+    /// here it would stamp an empty header, and the generator's GR.* metadata
+    /// (added later by Init() -> GeneratorInterface::InitRun) would never reach
+    /// the file.
     void SetEventFile(const std::string &outfile);
+
+    /// Record a run-level (NuHepMC GR.*) attribute.  Must be called before the
+    /// first event; the header is written once, when the writer is created.
+    /// Used by drivers to stamp their own configuration alongside NuGeometry's.
+    void SetRunAttribute(const std::string &key, const std::string &value);
+
+    /// Record the run's POT exposure (NuHepMC G.C.1) and declare the
+    /// convention.  This is the normalization a downstream analysis needs, and
+    /// HepMC3 writes the run info once at the top of the file, so it must be
+    /// set before the first event -- i.e. only a POT-targeted run can state it.
+    void SetExposurePOT(double pot);
+
+    /// NuGeometry's own run-level metadata: version/commit, geometry, sampling
+    /// mode, envelope calibration and traversal settings.  Called by Init(), so
+    /// it lands after the generator's GR.* block and before any event.
+    void WriteNuGeomRunInfo();
 
     void Setup(const std::string &geometry);
     void Setup(NuGeom::World world_) { world = world_; }
@@ -240,6 +261,9 @@ class DetectorSim {
     // mode-appropriate cross section) so the per-element rate is unbiased.
     Element PickElement(const Material &mat, double energy, int nu_pdg) const;
 
+    void EnsureWriter();
+
+    std::string m_outfile;
     bool m_two_stage{true};
     /// Largest column density seen per element (probe rays, then adaptively).
     std::map<NuGeom::Element, double> m_max_col_elem;

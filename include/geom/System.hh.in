@@ -10,6 +10,13 @@ namespace SystemVariables {
     const std::string libSuffix = "@LIBSUFFIX@";
 }
 
+/// Build provenance, stamped into the NuHepMC run info (GR.*) so an output
+/// file records exactly which NuGeometry produced it.
+namespace Version {
+    const std::string version = "@NUGEOMETRY_VERSION@";
+    const std::string gitCommit = "@NUGEOM_GIT_COMMIT@";
+}
+
 namespace PathVariables {
     const std::string buildPath = "@BUILDPATH@/";
     const std::string installPath = "@INSTALLPATH@/";

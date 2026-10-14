@@ -1,4 +1,6 @@
 #include "catch2/catch.hpp"
+#include <filesystem>
+#include <fstream>
 
 #include "geom/DetectorSim.hh"
 #include "geom/FluxSource.hh"
@@ -549,4 +551,51 @@ TEST_CASE("Two-stage rejection still charges POT for untraced rays",
     // the exposure: rate = events/POT stays put even though `traversed` drops.
     CHECK(two.rate == Approx(one.rate).epsilon(0.05));
     CHECK(two.traversed + two.stage1_rejected <= two.thrown);
+}
+
+// ---------------------------------------------------------------------------
+// NuHepMC output completeness.  HepMC3's WriterAscii emits the run info in its
+// CONSTRUCTOR, so a writer built before the generator's InitRun() freezes an
+// EMPTY header into the file -- which is exactly what used to happen, leaving
+// the output with no GR.* block at all.  The writer is now created lazily.
+// ---------------------------------------------------------------------------
+TEST_CASE("Output carries a run-info header with NuGeom and generator metadata",
+          "[DetectorSim][NuHepMC]") {
+    const auto path =
+        (std::filesystem::temp_directory_path() / "nugeom_runinfo_header.hepmc").string();
+    std::filesystem::remove(path);
+
+    NuGeom::Random::Instance().Seed(20260928);
+    NuGeom::DetectorSim sim(1.0);
+    DetSimFixture::SetupSim(sim);
+    sim.SetGenerator(
+        std::make_shared<NuGeom::MockGenerator>([](double, int, int) { return 1e-38; }));
+    sim.SetEventFile(path);
+    sim.SetEnergyRange(0.5, 5.0);
+    sim.SetFluxSpecies({14});
+    sim.Init(16);
+    // A driver-supplied attribute added AFTER Init() must still reach the file.
+    sim.SetRunAttribute("NuGeom.Test.DriverStamp", "hello");
+    sim.GenerateEvents(static_cast<std::size_t>(3));
+
+    std::ifstream in(path);
+    REQUIRE(in.good());
+    std::string header, line;
+    while(std::getline(in, line)) {
+        if(line.rfind("E ", 0) == 0) break; // run info ends at the first event
+        header += line + "\n";
+    }
+    INFO("header:\n" << header);
+    // NuGeometry's own run metadata.
+    CHECK(header.find("NuGeom.SamplingMode") != std::string::npos);
+    CHECK(header.find("NuGeom.Version") != std::string::npos);
+    CHECK(header.find("NuGeom.SafetyFactor") != std::string::npos);
+    // The estimator that carries the rate in this mode -- the most misread
+    // number in the output.
+    CHECK(header.find("NuGeom.RateEstimator") != std::string::npos);
+    // NuGeometry must appear as a tool so the file names what produced it.
+    CHECK(header.find("NuGeometry") != std::string::npos);
+    // And the late, driver-supplied attribute.
+    CHECK(header.find("NuGeom.Test.DriverStamp") != std::string::npos);
+    std::filesystem::remove(path);
 }

@@ -194,8 +194,13 @@ class CachedFluxStreamer : public FluxStreamer {
   private:
     /// Compact per-ray record.  window_area and POT-per-ray are file-level
     /// constants, so they are not stored per ray.
+    /// Compact per-ray record.  window_area and POT-per-ray are file-level
+    /// constants, so they are not stored per ray.  The provenance roughly
+    /// doubles the record (72 -> 152 bytes, so ~146 MB for the 961k-ray DUNE ND
+    /// flux); `max_bytes` still caps the total and falls back to streaming.
     struct Cached {
         double energy, ox, oy, oz, dx, dy, dz, weight;
+        FluxProvenance provenance;
         int pdg;
     };
 
